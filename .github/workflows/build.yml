@@ -1,1 +1,44 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android scaffolding (keep our own files)
+        run: |
+          flutter create --org com.soundxs --project-name soundxs_app /tmp/scaffold
+          rm -rf /tmp/scaffold/android/app/src/main/kotlin
+          cp -rn /tmp/scaffold/android/. android/
+
+      - name: Set applicationId and minSdk
+        run: |
+          for f in android/app/build.gradle android/app/build.gradle.kts; do
+            [ -f "$f" ] || continue
+            sed -i -E 's/com\.soundxs\.[a-z_]+/com.soundxs.app/g' "$f"
+            sed -i -E 's/minSdk(Version)?( =|) *flutter\.minSdkVersion/minSdk\1\2 23/' "$f"
+          done
+          grep -nE "minSdk|applicationId|namespace" android/app/build.gradle* || true
+
+      - run: flutter pub get
+      - run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SoundXs-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
