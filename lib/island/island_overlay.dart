@@ -39,6 +39,9 @@ class _IslandViewState extends State<_IslandView> {
   String _style = 'classic';
   int _offset = 6;
   bool _lite = false;
+  bool _shuffle = false;
+  bool _liked = false;
+  double? _drag; // 0..1 saat seek bar digeser
 
   bool _expanded = false;
   Timer? _tick;
@@ -61,8 +64,8 @@ class _IslandViewState extends State<_IslandView> {
     super.dispose();
   }
 
-  void _send(String cmd) {
-    FlutterOverlayWindow.shareData({'t': 'cmd', 'c': cmd});
+  void _send(String cmd, {Object? v}) {
+    FlutterOverlayWindow.shareData({'t': 'cmd', 'c': cmd, if (v != null) 'v': v});
   }
 
   void _onMessage(dynamic m) {
@@ -78,6 +81,8 @@ class _IslandViewState extends State<_IslandView> {
       _style = (m['style'] ?? 'classic').toString();
       _offset = (m['offset'] as num?)?.toInt() ?? 6;
       _lite = m['lite'] == true;
+      _shuffle = m['shuffle'] == true;
+      _liked = m['liked'] == true;
     });
     if (_offset != oldOffset) _resizeWindow(_expanded);
     _restartTick();
@@ -88,7 +93,7 @@ class _IslandViewState extends State<_IslandView> {
 
   void _restartTick() {
     _tick?.cancel();
-    if (_expanded && _playing) {
+    if (_expanded && _playing && _drag == null) {
       _tick = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
         setState(() => _pos = (_pos + 1000).clamp(0, _dur > 0 ? _dur : 1 << 31).toInt());
@@ -109,7 +114,7 @@ class _IslandViewState extends State<_IslandView> {
     }
     _resizeWindow(true); // jendela dibesarkan dulu, lalu isi dianimasikan
     setState(() => _expanded = true);
-    _send('sync');
+    _send('expanded', v: true); // main mulai kirim posisi asli tiap detik
     _restartTick();
     _armAutoCollapse(auto ? 4 : 6);
   }
@@ -117,7 +122,11 @@ class _IslandViewState extends State<_IslandView> {
   void _collapse() {
     if (!_expanded) return;
     _autoCollapse?.cancel();
-    setState(() => _expanded = false);
+    setState(() {
+      _expanded = false;
+      _drag = null;
+    });
+    _send('expanded', v: false);
     _restartTick();
     // tunggu animasi mengecil selesai baru kecilkan jendela
     Future<void>.delayed(Duration(milliseconds: _lite ? 20 : 300), () {
@@ -133,8 +142,68 @@ class _IslandViewState extends State<_IslandView> {
   void _cmd(String c) {
     _send(c);
     _armAutoCollapse(6);
+    // update optimistis; nilai sebenarnya segera ditimpa state dari AudioHandler
     if (c == 'toggle') setState(() => _playing = !_playing);
+    if (c == 'shuffle') setState(() => _shuffle = !_shuffle);
+    if (c == 'like') setState(() => _liked = !_liked);
     _restartTick();
+  }
+
+  void _seekTo(double frac) {
+    if (_dur <= 0) return;
+    final f = frac.clamp(0.0, 1.0).toDouble();
+    setState(() {
+      _pos = (f * _dur).round();
+      _drag = null;
+    });
+    _send('seek', v: _pos);
+    _armAutoCollapse(6);
+    _restartTick();
+  }
+
+  Widget _seekBar(double progress) {
+    return LayoutBuilder(builder: (context, box) {
+      final w = box.maxWidth <= 0 ? 1.0 : box.maxWidth;
+      final shown = (_drag ?? progress).clamp(0.0, 1.0).toDouble();
+      double frac(Offset o) => (o.dx / w).clamp(0.0, 1.0).toDouble();
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapUp: (d) => _seekTo(frac(d.localPosition)),
+        onHorizontalDragStart: (d) {
+          _autoCollapse?.cancel();
+          _tick?.cancel();
+          setState(() => _drag = frac(d.localPosition));
+        },
+        onHorizontalDragUpdate: (d) => setState(() => _drag = frac(d.localPosition)),
+        onHorizontalDragEnd: (_) => _seekTo(_drag ?? progress),
+        onHorizontalDragCancel: () {
+          setState(() => _drag = null);
+          _restartTick();
+        },
+        child: SizedBox(
+          height: 24,
+          child: Stack(
+            alignment: Alignment.centerLeft,
+            children: [
+              Container(height: 4, decoration: BoxDecoration(color: Colors.white12, borderRadius: BorderRadius.circular(2))),
+              Container(
+                height: 4,
+                width: w * shown,
+                decoration: BoxDecoration(color: const Color(0xFF79C9B8), borderRadius: BorderRadius.circular(2)),
+              ),
+              Positioned(
+                left: (w * shown - 6).clamp(0.0, w - 12).toDouble(),
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    });
   }
 
   BorderRadius get _radius {
@@ -222,6 +291,7 @@ class _IslandViewState extends State<_IslandView> {
 
   Widget _expandedView() {
     final progress = _dur <= 0 ? 0.0 : (_pos / _dur).clamp(0.0, 1.0).toDouble();
+    final shownPos = _drag != null && _dur > 0 ? (_drag! * _dur).round() : _pos;
     return OverflowBox(
       alignment: Alignment.topCenter,
       minWidth: kIslandExpandedW.toDouble(),
@@ -256,35 +326,32 @@ class _IslandViewState extends State<_IslandView> {
                 EqualizerBars(playing: _playing, height: 18, bars: 4, barWidth: 3),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
             Row(
               children: [
-                Text(_fmt(_pos), style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 3.5,
-                      backgroundColor: Colors.white12,
-                      valueColor: const AlwaysStoppedAnimation(Color(0xFF79C9B8)),
-                    ),
-                  ),
+                SizedBox(
+                  width: 34,
+                  child: Text(_fmt(shownPos), style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
                 ),
-                const SizedBox(width: 8),
-                Text(_fmt(_dur), style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+                Expanded(child: _seekBar(progress)),
+                SizedBox(
+                  width: 34,
+                  child: Text(_fmt(_dur),
+                      textAlign: TextAlign.right, style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+                ),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                _btn(Icons.shuffle_rounded, 22, () => _cmd('shuffle'),
+                    color: _shuffle ? const Color(0xFF79C9B8) : Colors.white54),
                 _btn(Icons.skip_previous_rounded, 30, () => _cmd('prev')),
-                const SizedBox(width: 22),
                 _btn(_playing ? Icons.pause_rounded : Icons.play_arrow_rounded, 38, () => _cmd('toggle')),
-                const SizedBox(width: 22),
                 _btn(Icons.skip_next_rounded, 30, () => _cmd('next')),
+                _btn(_liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, 22, () => _cmd('like'),
+                    color: _liked ? const Color(0xFFFFB3B0) : Colors.white54),
               ],
             ),
           ],
@@ -293,14 +360,12 @@ class _IslandViewState extends State<_IslandView> {
     );
   }
 
-  // area sentuh 46dp (sebelumnya ikon 30dp tanpa area -> susah dipencet)
-  Widget _btn(IconData icon, double size, VoidCallback onTap) => GestureDetector(
+  Widget _btn(IconData icon, double size, VoidCallback onTap, {Color color = Colors.white}) => GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
-        child: SizedBox(
-          width: 46,
-          height: 46,
-          child: Center(child: Icon(icon, color: Colors.white, size: size)),
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, color: color, size: size),
         ),
       );
 }

@@ -3,4 +3,4 @@
 const int kIslandCollapsedW = 150;
 const int kIslandCollapsedH = 36;
 const int kIslandExpandedW = 340;
-const int kIslandExpandedH = 156;
+const int kIslandExpandedH = 178;
