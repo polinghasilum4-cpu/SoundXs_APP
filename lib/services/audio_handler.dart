@@ -146,11 +146,10 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     if (p >= 0) await _playPos(p);
   }
 
-  Future<String> _resolveUrl(Track t) async {
-    if (t.hasStream) return t.streamUrl;
-    final url = await _api.getStreamUrl(t.id);
-    if (url.isEmpty) throw StateError('stream kosong');
-    return url;
+  Future<Track> _fresh(Track t) async {
+    final f = await _api.refresh(t);
+    if (f == null || !f.hasStream) throw StateError('stream kosong');
+    return f;
   }
 
   Future<void> _playPos(int p) async {
@@ -161,8 +160,14 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     current.value = t;
     mediaItem.add(_toItem(t));
 
-    Future<void> start(String url) async {
-      await _player.setUrl(url);
+    Future<void> start(Track src) async {
+      final url = await _api.proxiedStream(src);
+      if (url.isEmpty) throw StateError('stream kosong');
+      if (src.streamType == 'hls') {
+        await _player.setAudioSource(HlsAudioSource(Uri.parse(url)));
+      } else {
+        await _player.setUrl(url);
+      }
       if (token != _token) return;
       await _applyStyle();
       unawaited(_player.play());
@@ -171,13 +176,12 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     }
 
     try {
-      await start(await _resolveUrl(t));
+      await start(t.hasStream ? t : await _fresh(t));
     } catch (_) {
       if (token != _token) return;
       try {
-        // stream_url bisa kedaluwarsa -> minta yang baru lewat id
-        final fresh = await _api.getStreamUrl(t.id);
-        if (fresh.isEmpty) throw StateError('stream kosong');
+        // data stream lama bisa kedaluwarsa -> ambil yang baru
+        final fresh = await _fresh(t);
         if (token != _token) return;
         await start(fresh);
       } catch (_) {

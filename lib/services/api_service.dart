@@ -26,7 +26,7 @@ class ApiService {
   factory ApiService() => _instance;
 
   static const _api = '/api';
-  static const _timeout = Duration(seconds: 12);
+  static const _timeout = Duration(seconds: 30);
   static const _ttl = Duration(minutes: 5);
 
   final http.Client _http = http.Client();
@@ -34,28 +34,36 @@ class ApiService {
   final Map<String, Future<List<Track>>> _inflight = {};
   String? _clientId;
 
+  static const _ua =
+      'Mozilla/5.0 (Linux; Android 13; SM-A135F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
   Future<dynamic> _getJson(Uri uri, {void Function(int status)? onStatus}) async {
-    try {
-      final res = await _http.get(uri, headers: {'Accept': 'application/json'}).timeout(_timeout);
-      onStatus?.call(res.statusCode);
-      dynamic data;
+    for (var attempt = 0; attempt < 2; attempt++) {
       try {
-        data = jsonDecode(utf8.decode(res.bodyBytes));
-      } catch (_) {
-        data = null;
+        final res = await _http
+            .get(uri, headers: {'Accept': 'application/json', 'User-Agent': _ua})
+            .timeout(_timeout);
+        onStatus?.call(res.statusCode);
+        dynamic data;
+        try {
+          data = jsonDecode(utf8.decode(res.bodyBytes));
+        } catch (_) {
+          data = null;
+        }
+        if (res.statusCode != 200) {
+          final msg = data is Map ? data['error'] : null;
+          throw ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
+        }
+        return data;
+      } on TimeoutException {
+        if (attempt == 1) throw ApiException('Koneksi lambat, coba lagi.');
+      } on SocketException {
+        if (attempt == 1) throw ApiException('Tidak ada koneksi internet.');
+      } on http.ClientException {
+        if (attempt == 1) throw ApiException('Tidak ada koneksi internet.');
       }
-      if (res.statusCode != 200) {
-        final msg = data is Map ? data['error'] : null;
-        throw ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
-      }
-      return data;
-    } on TimeoutException {
-      throw ApiException('Koneksi lambat, coba lagi.');
-    } on SocketException {
-      throw ApiException('Tidak ada koneksi internet.');
-    } on http.ClientException {
-      throw ApiException('Tidak ada koneksi internet.');
     }
+    throw ApiException('Koneksi gagal.');
   }
 
   Future<String> getCredentials({bool force = false}) async {
@@ -128,17 +136,47 @@ class ApiService {
   Future<List<Track>> getPlaylistTracks(String id) =>
       _requestSearch({'playlist_id': id, 'type': 'tracks'}, ItemKind.track);
 
-  Future<String> getStreamUrl(String trackId) async {
-    final data = await _getJson(
-        Uri.parse('${ApiConfig.baseUrl}$_api/stream').replace(queryParameters: {'id': trackId}));
-    if (data is! Map) return '';
-    return (data['url'] ?? data['audioUrl'] ?? data['streamUrl'] ?? '').toString();
+  /// URL stream lewat proxy server (sama seperti versi web):
+  /// /api/stream?url=<stream_url SoundCloud>&client_id=...&track_authorization=...
+  /// Server membalas 302 ke CDN SoundCloud, player mengikuti redirect itu.
+  Future<String> proxiedStream(Track t) async {
+    if (t.streamUrl.isEmpty) return '';
+    final id = await getCredentials();
+    return Uri.parse('${ApiConfig.baseUrl}$_api/stream').replace(queryParameters: {
+      'url': t.streamUrl,
+      'client_id': id,
+      if (t.trackAuthorization.isNotEmpty) 'track_authorization': t.trackAuthorization,
+    }).toString();
   }
 
-  Future<String> getLyrics(String trackId) async {
-    final data = await _getJson(
-        Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: {'id': trackId}));
-    if (data is! Map) return '';
-    return (data['lyrics'] ?? data['text'] ?? '').toString();
+  /// Ambil data lagu terbaru (stream_url + track_authorization) lewat pencarian,
+  /// untuk lagu tersimpan/disukai yang datanya sudah kedaluwarsa.
+  Future<Track?> refresh(Track t) async {
+    final list = await search('${t.title} ${t.artist}');
+    for (final e in list) {
+      if (e.id == t.id && e.streamUrl.isNotEmpty) return e;
+    }
+    final byTitle = await search(t.title);
+    for (final e in byTitle) {
+      if (e.id == t.id && e.streamUrl.isNotEmpty) return e;
+    }
+    return null;
+  }
+
+  /// Lirik dari /api/lyrics?title=&artist=&duration= -> teks per baris.
+  Future<String> getLyrics(Track t) async {
+    final params = <String, String>{
+      'title': t.title,
+      'artist': t.artist,
+      if (t.durationMs > 0) 'duration': (t.durationMs / 1000).round().toString(),
+    };
+    final data = await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params));
+    if (data is! Map || data['success'] != true) return '';
+    final lines = data['lines'];
+    if (lines is! List) return '';
+    return lines
+        .map((e) => e is Map ? (e['text'] ?? '').toString() : '')
+        .where((x) => x.isNotEmpty)
+        .join('\n');
   }
 }
