@@ -134,7 +134,11 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    final inset = MediaQuery.of(context).padding.bottom;
+    final mq = MediaQuery.of(context);
+    final inset = mq.padding.bottom;
+    final keyboardOpen = mq.viewInsets.bottom > 0;
+    const anim = Duration(milliseconds: 380);
+    const curve = Curves.easeOutCubic;
     return PopScope(
       canPop: _tab == 0,
       onPopInvoked: (didPop) {
@@ -153,50 +157,35 @@ class _MainShellState extends State<MainShell> {
             child: Stack(
               children: [
                 Positioned.fill(child: IndexedStack(index: _tab, children: _pages)),
-                // Mini player + navigasi. Disembunyikan saat keyboard terbuka.
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: Builder(builder: (ctx) {
-                    if (MediaQuery.of(ctx).viewInsets.bottom > 0) return const SizedBox.shrink();
-                    return Padding(
-                      padding: EdgeInsets.fromLTRB(16, 0, 16, inset + 10),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          ValueListenableBuilder<Track?>(
-                            valueListenable: audioHandler.current,
-                            builder: (_, t, __) => AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 260),
-                              transitionBuilder: (child, anim) => FadeTransition(
-                                opacity: anim,
-                                child: SlideTransition(
-                                  position: Tween<Offset>(begin: const Offset(0, 0.25), end: Offset.zero).animate(anim),
-                                  child: child,
-                                ),
-                              ),
-                              child: t == null
-                                  ? const SizedBox.shrink(key: ValueKey('no_mini'))
-                                  : Padding(
-                                      key: const ValueKey('mini'),
-                                      padding: const EdgeInsets.only(bottom: 10),
-                                      child: MiniPlayer(track: t, onTap: _openPlayer),
-                                    ),
-                            ),
-                          ),
-                          LiquidNav(
-                            index: _tab,
-                            shrunk: _shrunk,
-                            onChanged: _select,
-                            onExpand: () => _setShrunk(false),
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
-                ),
+                if (!keyboardOpen) ...[
+                  // Mini player: di atas nav saat terbuka, sejajar di samping bulet saat nav menyusut.
+                  AnimatedPositioned(
+                    duration: anim,
+                    curve: curve,
+                    left: _shrunk ? 16 + kNavHeight + 10 : 16,
+                    right: 16,
+                    bottom: _shrunk ? inset + 10 : inset + 10 + kNavHeight + 10,
+                    height: 68,
+                    child: ValueListenableBuilder<Track?>(
+                      valueListenable: audioHandler.current,
+                      builder: (_, t, __) => t == null
+                          ? const SizedBox.shrink()
+                          : MiniPlayer(track: t, onTap: _openPlayer),
+                    ),
+                  ),
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: inset + 10,
+                    height: kNavHeight,
+                    child: LiquidNav(
+                      index: _tab,
+                      shrunk: _shrunk,
+                      onChanged: _select,
+                      onExpand: () => _setShrunk(false),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
