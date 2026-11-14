@@ -36,4 +36,4 @@ ThemeData buildTheme() {
   );
 }
 
-const kBottomSpace = 170.0; // ruang kosong di bawah list (nav + mini player)
+const kBottomSpace = 190.0; // ruang kosong di bawah list (nav + mini player)
