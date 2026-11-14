@@ -3,6 +3,7 @@ import '../globals.dart';
 import '../models/track.dart';
 import '../theme/app_theme.dart';
 import 'cover_image.dart';
+import 'download_button.dart';
 import 'press_scale.dart';
 
 /// Baris lagu/playlist/artis. Tanpa BackdropFilter (penyebab utama lag di list panjang).
@@ -14,6 +15,7 @@ class TrackTile extends StatelessWidget {
     this.rank,
     this.trailing,
     this.subtitle,
+    this.showDownload = true,
   });
 
   final Track track;
@@ -21,6 +23,7 @@ class TrackTile extends StatelessWidget {
   final int? rank;
   final Widget? trailing;
   final String? subtitle;
+  final bool showDownload;
 
   String get _sub {
     if (subtitle != null) return subtitle!;
@@ -94,6 +97,7 @@ class TrackTile extends StatelessWidget {
                     ),
                   ),
                   if (active) const Icon(Icons.graphic_eq_rounded, color: C.mint, size: 20),
+                  if (showDownload && track.kind == ItemKind.track) DownloadButton(track: track, size: 20),
                   if (trailing != null) trailing!,
                 ],
               ),
