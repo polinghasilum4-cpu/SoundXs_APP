@@ -7,8 +7,8 @@ import 'liquid_glass.dart';
 const _kNavItems = <(IconData, IconData, String)>[
   (Icons.home_rounded, Icons.home_outlined, 'Beranda'),
   (Icons.search_rounded, Icons.search_rounded, 'Cari'),
-  (Icons.library_music_rounded, Icons.library_music_outlined, 'Library'),
-  (Icons.person_rounded, Icons.person_outline_rounded, 'Profil'),
+  (Icons.library_music_rounded, Icons.library_music_outlined, 'Pustaka'),
+  (Icons.person_rounded, Icons.person_outline_rounded, 'Kamu'),
 ];
 
 const double kNavHeight = 66;
@@ -186,7 +186,7 @@ class _LiquidNavState extends State<LiquidNav> with SingleTickerProviderStateMix
       child: SizedBox(
         width: w,
         height: kNavHeight,
-        child: LiquidGlass(radius: kNavHeight / 2, tint: 0.10, child: content),
+        child: LiquidGlass(radius: kNavHeight / 2, tint: 0.16, blur: 26, child: content),
       ),
     );
   }
