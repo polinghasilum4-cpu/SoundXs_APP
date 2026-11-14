@@ -7,7 +7,7 @@ import 'package:just_audio/just_audio.dart';
 import '../models/track.dart';
 import 'api_service.dart';
 
-enum RepeatMode { off, all, one }
+enum SxRepeatMode { off, all, one }
 
 const kSoundStyles = ['normal', 'spedup', 'slowed', 'nightcore', 'bass'];
 const kSoundLabels = {
@@ -59,12 +59,12 @@ class SoundXsAudioHandler extends BaseAudioHandler {
   int _token = 0;
   int _failStreak = 0;
   bool _shuffle = false;
-  RepeatMode _repeat = RepeatMode.off;
+  SxRepeatMode _repeat = SxRepeatMode.off;
 
   /// Lagu yang sedang aktif. UI cukup listen ini (otomatis ikut saat auto-next).
   final ValueNotifier<Track?> current = ValueNotifier<Track?>(null);
   final ValueNotifier<bool> shuffleOn = ValueNotifier<bool>(false);
-  final ValueNotifier<RepeatMode> repeatMode = ValueNotifier<RepeatMode>(RepeatMode.off);
+  final ValueNotifier<SxRepeatMode> repeatMode = ValueNotifier<SxRepeatMode>(SxRepeatMode.off);
   final ValueNotifier<String> style = ValueNotifier<String>('normal');
   final ValueNotifier<String?> errorMessage = ValueNotifier<String?>(null);
 
@@ -194,14 +194,14 @@ class SoundXsAudioHandler extends BaseAudioHandler {
   }
 
   void _onCompleted() {
-    if (_repeat == RepeatMode.one) {
+    if (_repeat == SxRepeatMode.one) {
       _player.seek(Duration.zero);
       _player.play();
       return;
     }
     if (_pos + 1 < _order.length) {
       _playPos(_pos + 1);
-    } else if (_repeat == RepeatMode.all && _queue.isNotEmpty) {
+    } else if (_repeat == SxRepeatMode.all && _queue.isNotEmpty) {
       _rebuildOrder(_shuffle ? _order.first : 0);
       _playPos(0);
     } else {
@@ -226,7 +226,7 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     if (_order.isEmpty) return;
     if (_pos + 1 < _order.length) {
       await _playPos(_pos + 1);
-    } else if (_repeat == RepeatMode.all) {
+    } else if (_repeat == SxRepeatMode.all) {
       _rebuildOrder(_shuffle ? _order.first : 0);
       await _playPos(0);
     }
@@ -258,7 +258,7 @@ class SoundXsAudioHandler extends BaseAudioHandler {
   }
 
   void cycleRepeat() {
-    _repeat = RepeatMode.values[(_repeat.index + 1) % RepeatMode.values.length];
+    _repeat = SxRepeatMode.values[(_repeat.index + 1) % SxRepeatMode.values.length];
     repeatMode.value = _repeat;
   }
 
