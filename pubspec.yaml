@@ -17,6 +17,7 @@ dependencies:
   cached_network_image: ^3.3.1
   flutter_cache_manager: ^3.3.1
   shared_preferences: ^2.2.2
+  path_provider: ^2.1.2
   # Dynamic Island versi Android (overlay di atas aplikasi lain)
   flutter_overlay_window: ^0.4.5
 
