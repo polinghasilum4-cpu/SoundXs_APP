@@ -358,7 +358,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
 
   void _showLyrics(Track t) {
-    final future = _api.getLyrics(t.id);
+    final future = _api.getLyrics(t);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
