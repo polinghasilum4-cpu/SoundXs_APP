@@ -374,3 +374,35 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+
+class RecentCard extends StatelessWidget {
+  const RecentCard({super.key, required this.track, required this.onTap, this.size = 120});
+  final Track track;
+  final VoidCallback onTap;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return PressScale(
+      onTap: onTap,
+      child: SizedBox(
+        width: size,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CoverImage(url: track.coverUrl, size: size, radius: 22),
+            const SizedBox(height: 8),
+            Text(track.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)),
+            Text(track.artist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: C.dim, fontSize: 11.5)),
+          ],
+        ),
+      ),
+    );
+  }
+}
