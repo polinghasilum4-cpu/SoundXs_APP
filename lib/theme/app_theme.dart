@@ -3,12 +3,12 @@ import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 class C {
-  static const bg = Color(0xFF09090B);
-  static const bg2 = Color(0xFF0C1A1A);
-  static const teal = Color(0xFF328F83);
-  static const mint = Color(0xFF79C9B8);
-  static const surface = Color(0xFF15191A);
-  static const glassSolid = Color(0xFF1B2224);
+  static const bg = Color(0xFF0E0A0C);
+  static const bg2 = Color(0xFF2E1A22);
+  static const teal = Color(0xFF8E3F4C);
+  static const mint = Color(0xFFFFB3B0);
+  static const surface = Color(0xFF24191D);
+  static const glassSolid = Color(0xFF2D2227);
   static const sub = Color(0x99FFFFFF);
   static const dim = Color(0x61FFFFFF);
 }
