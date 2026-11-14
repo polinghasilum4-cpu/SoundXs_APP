@@ -20,6 +20,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await store.load();
+  await downloads.load();
   Perf.instance.start(PerfMode.values[store.perfMode]);
 
   // Hanya SATU inisialisasi: AudioService. (Versi lama memanggil JustAudioBackground.init
@@ -32,7 +33,14 @@ Future<void> main() async {
       androidNotificationOngoing: true,
     ),
   );
-  audioHandler.onTrackStarted = store.recordPlay;
+  audioHandler
+    ..onTrackStarted = store.recordPlay
+    ..localAudio = downloads.localAudio
+    ..localCover = downloads.localCover
+    ..isLiked = ((t) => store.isLiked(t.id))
+    ..toggleLike = store.toggleLike;
+  // Tombol like di notifikasi / Island ikut berubah saat daftar disukai berubah.
+  store.addListener(audioHandler.refreshState);
 
   try {
     final session = await AudioSession.instance;
