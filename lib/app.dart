@@ -7,6 +7,7 @@ import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/search_screen.dart';
+import 'splash/sunset_splash.dart';
 import 'theme/app_theme.dart';
 import 'widgets/glass.dart';
 import 'widgets/mini_player.dart';
@@ -21,7 +22,7 @@ class SoundXsApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'SoundXs',
       theme: buildTheme(),
-      home: const MainShell(),
+      home: SunsetSplash(next: () => const MainShell()),
     );
   }
 }
