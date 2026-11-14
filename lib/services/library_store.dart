@@ -18,6 +18,7 @@ class LibraryStore extends ChangeNotifier {
   List<Track> liked = [];
   List<Track> recent = [];
   List<Track> savedPlaylists = [];
+  List<Track> followedArtists = [];
   final Map<String, int> _plays = {};
   final Map<String, Track> _meta = {};
 
@@ -35,6 +36,7 @@ class LibraryStore extends ChangeNotifier {
     liked = _readList(p.getString('lib_liked'));
     recent = _readList(p.getString('lib_recent'));
     savedPlaylists = _readList(p.getString('lib_saved_pl'));
+    followedArtists = _readList(p.getString('lib_followed'));
 
     try {
       final plays = jsonDecode(p.getString('lib_plays') ?? '{}');
@@ -91,6 +93,18 @@ class LibraryStore extends ChangeNotifier {
       savedPlaylists = savedPlaylists.where((e) => e.id != p.id).toList();
     } else {
       savedPlaylists = [p, ...savedPlaylists];
+    }
+    _changed();
+  }
+
+  // ───────────── Artis diikuti (lokal) ─────────────
+  bool isFollowing(String key) => followedArtists.any((a) => a.id == key);
+
+  void toggleFollowArtist(Track artist) {
+    if (isFollowing(artist.id)) {
+      followedArtists = followedArtists.where((e) => e.id != artist.id).toList();
+    } else {
+      followedArtists = [artist, ...followedArtists];
     }
     _changed();
   }
@@ -180,6 +194,7 @@ class LibraryStore extends ChangeNotifier {
     await p.setString('lib_liked', enc(liked));
     await p.setString('lib_recent', enc(recent));
     await p.setString('lib_saved_pl', enc(savedPlaylists));
+    await p.setString('lib_followed', enc(followedArtists));
     await p.setString('lib_plays', jsonEncode(_plays));
     await p.setString('lib_meta', jsonEncode(_meta.map((k, v) => MapEntry(k, v.toJson()))));
     await p.setBool('island_on', islandOn);
