@@ -11,6 +11,8 @@ class Track {
   final String category;
   final ItemKind kind;
   final int trackCount;
+  final String streamType;
+  final String trackAuthorization;
 
   const Track({
     required this.id,
@@ -23,6 +25,8 @@ class Track {
     this.category = 'Semua',
     this.kind = ItemKind.track,
     this.trackCount = 0,
+    this.streamType = '',
+    this.trackAuthorization = '',
   });
 
   static String _s(dynamic v) => v == null ? '' : v.toString();
@@ -79,6 +83,8 @@ class Track {
       category: _pick([json['category']]).isEmpty ? 'Semua' : _s(json['category']),
       kind: k,
       trackCount: _i(json['track_count']),
+      streamType: _s(json['stream_type']),
+      trackAuthorization: _s(json['track_authorization']),
     );
   }
 
@@ -92,6 +98,9 @@ class Track {
         'permalink_url': permalinkUrl,
         'kind': kind.name,
         'track_count': trackCount,
+        'stream_url': streamUrl,
+        'stream_type': streamType,
+        'track_authorization': trackAuthorization,
       };
 
   Track copyWith({String? streamUrl}) => Track(
@@ -105,6 +114,8 @@ class Track {
         category: category,
         kind: kind,
         trackCount: trackCount,
+        streamType: streamType,
+        trackAuthorization: trackAuthorization,
       );
 
   bool get hasStream => streamUrl.isNotEmpty;
