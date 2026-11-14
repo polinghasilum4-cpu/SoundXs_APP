@@ -3,6 +3,7 @@ import '../globals.dart';
 import '../models/track.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/liquid_glass.dart';
 import '../widgets/press_scale.dart';
 import '../widgets/track_tile.dart';
 import 'track_list_screen.dart';
@@ -27,7 +28,8 @@ class LibraryScreen extends StatelessWidget {
             children: [
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 16, 20, 16),
-                child: Text('Library', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white)),
+                child: Text('Library',
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white)),
               ),
               _likedCard(liked),
               if (saved.isNotEmpty) ...[
@@ -75,8 +77,10 @@ class LibraryScreen extends StatelessWidget {
               if (liked.isEmpty && saved.isEmpty && recent.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(28),
-                  child: Text('Belum ada apa-apa. Tap ❤ di player buat nyimpen lagu, atau simpan playlist dari hasil pencarian.',
-                      style: TextStyle(color: C.dim, height: 1.5)),
+                  child: Text(
+                    'Belum ada apa-apa. Tap ❤ di player buat nyimpen lagu, atau simpan playlist dari hasil pencarian.',
+                    style: TextStyle(color: C.dim, height: 1.5),
+                  ),
                 ),
             ],
           );
@@ -93,17 +97,18 @@ class LibraryScreen extends StatelessWidget {
   Widget _likedCard(List<Track> liked) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
+      child: LiquidGlass(
+        radius: 24,
+        tint: 0.12,
         padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(colors: [C.teal, Color(0xFF1B5F57)]),
-          borderRadius: BorderRadius.circular(24),
-        ),
         child: Row(children: [
           Container(
             width: 56,
             height: 56,
-            decoration: BoxDecoration(color: op(Colors.white, 0.2), borderRadius: BorderRadius.circular(16)),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(colors: [C.teal, C.mint]),
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: const Icon(Icons.favorite_rounded, color: Colors.white),
           ),
           const SizedBox(width: 14),

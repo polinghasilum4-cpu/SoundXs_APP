@@ -56,7 +56,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _error = null;
     });
     try {
-      final res = await _api.search(MOOD_QUERY[mood]!);
+      // Batas waktu di UI: tidak pernah nyangkut shimmer. Gagal -> tampil pesan + tombol coba lagi.
+      final res = await _api.search(MOOD_QUERY[mood]!).timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
+      );
       if (!mounted || id != _req) return;
       setState(() {
         _tracks = res.where((e) => e.kind == ItemKind.track).toList();
