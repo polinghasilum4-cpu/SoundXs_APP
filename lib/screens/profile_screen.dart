@@ -50,7 +50,7 @@ class ProfileScreen extends StatelessWidget {
             children: [
               const Padding(
                 padding: EdgeInsets.fromLTRB(4, 16, 4, 16),
-                child: Text('Profil', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white)),
+                child: Text('Kamu', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.white)),
               ),
               Row(children: [
                 Expanded(child: _statCard('${store.totalPlays}', 'Lagu diputar')),

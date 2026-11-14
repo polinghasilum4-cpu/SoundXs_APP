@@ -135,8 +135,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 _seek(track),
                                 const SizedBox(height: 4),
                                 _controls(),
-                                const SizedBox(height: 16),
-                                _bottomActions(),
+                                const SizedBox(height: 6),
+                                _volume(),
+                                const SizedBox(height: 18),
+                                _bottomActions(track),
                                 const SizedBox(height: 14),
                               ],
                             ),
@@ -266,9 +268,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return LiquidGlass(
       key: const ValueKey('lyrics'),
       radius: 28,
+      tint: 0.14,
       width: size,
       height: size,
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
       child: FutureBuilder<String>(
         future: _lyrics,
         builder: (_, snap) {
@@ -276,11 +279,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
             return const Center(child: CircularProgressIndicator(color: C.mint, strokeWidth: 2.5));
           }
           final txt = snap.hasError || (snap.data ?? '').trim().isEmpty ? 'Lirik tidak tersedia' : snap.data!;
-          return SingleChildScrollView(
-            child: Text(
-              txt,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 16, height: 1.8, fontWeight: FontWeight.w600),
+          return LayoutBuilder(
+            builder: (_, c) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: c.maxHeight),
+                child: Center(
+                  child: Text(
+                    txt,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 16, height: 1.8, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
             ),
           );
         },
@@ -444,24 +454,168 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _bottomActions() => Center(
-        child: PressScale(
-          onTap: _showQueue,
-          child: LiquidGlass(
+  Widget _volume() {
+    final p = audioHandler.player;
+    return StreamBuilder<double>(
+      stream: p.volumeStream,
+      initialData: p.volume,
+      builder: (_, snap) {
+        final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
+        return Row(
+          children: [
+            const Icon(Icons.volume_down_rounded, color: Colors.white54, size: 20),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  overlayShape: SliderComponentShape.noOverlay,
+                  activeTrackColor: Colors.white70,
+                  inactiveTrackColor: Colors.white24,
+                  thumbColor: Colors.white,
+                ),
+                child: Slider(value: v, min: 0, max: 1, onChanged: (x) => audioHandler.setVolume(x)),
+              ),
+            ),
+            const Icon(Icons.volume_up_rounded, color: Colors.white54, size: 20),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _actionBtn(IconData icon, String label, VoidCallback onTap, {bool active = false}) {
+    return PressScale(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          LiquidGlass(
             radius: 999,
-            tint: 0.08,
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.queue_music_rounded, color: Colors.white70, size: 18),
-                SizedBox(width: 8),
-                Text('Antrian', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
-              ],
+            tint: active ? 0.22 : 0.08,
+            width: 56,
+            height: 46,
+            child: Icon(icon, color: active ? C.mint : Colors.white70, size: 22),
+          ),
+          const SizedBox(height: 5),
+          Text(label, style: TextStyle(color: active ? C.mint : Colors.white54, fontSize: 11, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  Widget _bottomActions(Track t) => ValueListenableBuilder<DateTime?>(
+        valueListenable: audioHandler.sleepUntil,
+        builder: (_, until, __) => Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            ValueListenableBuilder<double>(
+              valueListenable: audioHandler.tempo,
+              builder: (_, v, __) => _actionBtn(Icons.speed_rounded, 'x${v.toStringAsFixed(2)}', _showTempo,
+                  active: (v - 1.0).abs() > 0.001),
+            ),
+            _actionBtn(Icons.queue_music_rounded, 'Antrian', _showQueue),
+            _actionBtn(Icons.bedtime_rounded, until == null ? 'Tidur' : 'Tidur aktif', _showSleep,
+                active: until != null),
+            _actionBtn(Icons.link_rounded, 'Salin', () => _copyLink(t)),
+          ],
+        ),
+      );
+
+  void _copyLink(Track t) {
+    final text = t.permalinkUrl.isNotEmpty ? t.permalinkUrl : '${t.artist} - ${t.title}';
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Disalin ke clipboard'), behavior: SnackBarBehavior.floating));
+  }
+
+  void _showTempo() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Tempo dan Nada', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+        content: ValueListenableBuilder<double>(
+          valueListenable: audioHandler.tempo,
+          builder: (_, v, __) => Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.remove_rounded, color: Colors.white),
+                onPressed: () => audioHandler.setTempo(v - 0.05),
+              ),
+              Text('x${v.toStringAsFixed(2)}',
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+              IconButton(
+                icon: const Icon(Icons.add_rounded, color: Colors.white),
+                onPressed: () => audioHandler.setTempo(v + 0.05),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => audioHandler.setTempo(1.0), child: const Text('Atur ulang')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
+  void _showSleep() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: LiquidGlass(
+            radius: 30,
+            tint: 0.14,
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+            child: Material(
+              color: Colors.transparent,
+              child: ValueListenableBuilder<DateTime?>(
+                valueListenable: audioHandler.sleepUntil,
+                builder: (_, until, __) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Timer tidur',
+                        style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 4),
+                    Text(
+                      until == null
+                          ? 'Musik akan berhenti otomatis setelah waktu yang dipilih.'
+                          : 'Berhenti pukul ${until.hour.toString().padLeft(2, '0')}:${until.minute.toString().padLeft(2, '0')}',
+                      style: const TextStyle(color: C.sub, fontSize: 12.5),
+                    ),
+                    const SizedBox(height: 8),
+                    for (final m in const [15, 30, 60])
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text('$m menit', style: const TextStyle(color: Colors.white)),
+                        onTap: () {
+                          audioHandler.setSleepTimer(Duration(minutes: m));
+                          Navigator.of(ctx).pop();
+                        },
+                      ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Matikan timer', style: TextStyle(color: Colors.white)),
+                      onTap: () {
+                        audioHandler.setSleepTimer(null);
+                        Navigator.of(ctx).pop();
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
-      );
+      ),
+    );
+  }
 
   void _showStyles() {
     showModalBottomSheet<void>(
