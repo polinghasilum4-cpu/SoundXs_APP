@@ -293,12 +293,14 @@ class _IslandViewState extends State<_IslandView> {
     );
   }
 
+  // area sentuh 46dp (sebelumnya ikon 30dp tanpa area -> susah dipencet)
   Widget _btn(IconData icon, double size, VoidCallback onTap) => GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(2),
-          child: Icon(icon, color: Colors.white, size: size),
+        child: SizedBox(
+          width: 46,
+          height: 46,
+          child: Center(child: Icon(icon, color: Colors.white, size: size)),
         ),
       );
 }
