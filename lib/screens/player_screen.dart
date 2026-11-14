@@ -269,11 +269,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
           icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 42),
           onPressed: h.skipToNext,
         ),
-        ValueListenableBuilder<RepeatMode>(
+        ValueListenableBuilder<SxRepeatMode>(
           valueListenable: h.repeatMode,
           builder: (_, m, __) => IconButton(
-            icon: Icon(m == RepeatMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                color: m == RepeatMode.off ? Colors.white54 : C.mint),
+            icon: Icon(m == SxRepeatMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                color: m == SxRepeatMode.off ? Colors.white54 : C.mint),
             onPressed: h.cycleRepeat,
           ),
         ),
