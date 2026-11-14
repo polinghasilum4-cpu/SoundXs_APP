@@ -1,0 +1,27 @@
+name: soundxs_app
+description: SoundXs - Music App
+publish_to: 'none'
+version: 1.1.0+2
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  permission_handler: ^11.3.0
+  just_audio: ^0.9.36
+  audio_service: ^0.18.12
+  audio_session: ^0.1.16
+  cached_network_image: ^3.3.1
+  flutter_cache_manager: ^3.3.1
+  shared_preferences: ^2.2.2
+  # Dynamic Island versi Android (overlay di atas aplikasi lain)
+  flutter_overlay_window: ^0.4.5
+
+# Catatan: just_audio_background DIHAPUS (bentrok dengan audio_service),
+# dynamic_color dihapus (tidak dipakai), blok `assets:` dihapus
+# (folder assets/images/ tidak ada -> build error).
+flutter:
+  uses-material-design: true
