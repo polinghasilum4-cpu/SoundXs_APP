@@ -25,3 +25,5 @@ dependencies:
 # (folder assets/images/ tidak ada -> build error).
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logo.png
