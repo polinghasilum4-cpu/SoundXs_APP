@@ -287,8 +287,8 @@ class SoundXsAudioHandler extends BaseAudioHandler {
         pitch = 0.92;
         break;
       case 'nightcore':
-        speed = 1.3;
-        pitch = 1.3;
+        speed = 1.4; // sama dengan web (1.4x)
+        pitch = 1.4;
         break;
       case 'bass':
         bass = true;

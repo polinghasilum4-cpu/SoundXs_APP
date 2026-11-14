@@ -26,7 +26,7 @@ class ApiService {
   factory ApiService() => _instance;
 
   static const _api = '/api';
-  static const _timeout = Duration(seconds: 30);
+  static const _timeout = Duration(seconds: 15);
   static const _ttl = Duration(minutes: 5);
 
   final http.Client _http = http.Client();

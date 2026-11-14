@@ -13,7 +13,11 @@ import 'library_store.dart';
 
 /// Dynamic Island lintas platform.
 ///  - Android: overlay melayang di atas aplikasi lain (flutter_overlay_window).
-///  - iOS: Live Activity (tampil di Dynamic Island iPhone 14 Pro ke atas) lewat MethodChannel.
+///  - iOS: Live Activity di Dynamic Island / Lock Screen (lewat MethodChannel + App Intents).
+///
+/// Perintah kontrol (toggle / next / prev) datang dari dua tempat:
+///  - Android: pesan dari overlay.
+///  - iOS: tombol Live Activity -> App Intent -> App Group -> notifikasi Darwin -> native kirim 'command' ke sini.
 class IslandService with WidgetsBindingObserver {
   IslandService(this.handler, this.store);
 
@@ -29,6 +33,7 @@ class IslandService with WidgetsBindingObserver {
   bool _background = false;
   bool _overlayOn = false;
   bool _busy = false;
+  bool _pending = false; // ada permintaan sync saat sedang sibuk -> jalankan lagi setelahnya
   String? _lastTrackId;
   Timer? _debounce;
 
@@ -40,6 +45,9 @@ class IslandService with WidgetsBindingObserver {
     store.addListener(_onSettings);
     if (_isAndroid) {
       FlutterOverlayWindow.overlayListener.listen(_onOverlayMessage);
+    }
+    if (_isIos) {
+      _iosChannel.setMethodCallHandler(_onIosCall);
     }
   }
 
@@ -90,7 +98,11 @@ class IslandService with WidgetsBindingObserver {
   }
 
   Future<void> _doSync(bool force) async {
-    if (_busy) return;
+    // Versi lama membuang permintaan saat sedang sibuk -> overlay bisa tidak muncul. Sekarang diantrikan.
+    if (_busy) {
+      _pending = true;
+      return;
+    }
     _busy = true;
     try {
       final hasTrack = handler.current.value != null;
@@ -117,7 +129,7 @@ class IslandService with WidgetsBindingObserver {
         }
       } else if (_isIos) {
         if (store.islandOn && hasTrack) {
-          _push();
+          await _push();
         } else {
           await _iosChannel.invokeMethod('end');
         }
@@ -126,6 +138,10 @@ class IslandService with WidgetsBindingObserver {
       debugPrint('IslandService sync error: $e');
     } finally {
       _busy = false;
+      if (_pending) {
+        _pending = false;
+        _sync();
+      }
     }
   }
 
@@ -176,12 +192,15 @@ class IslandService with WidgetsBindingObserver {
     });
   }
 
-  // ───────────── Perintah dari overlay ─────────────
-  void _onOverlayMessage(dynamic msg) {
-    if (msg is! Map || msg['t'] != 'cmd') return;
-    switch (msg['c']) {
+  // ───────────── Perintah kontrol (dari overlay Android & tombol iOS) ─────────────
+  void _command(String? c) {
+    switch (c) {
       case 'toggle':
-        handler.player.playing ? handler.pause() : handler.play();
+        if (handler.player.playing) {
+          handler.pause();
+        } else {
+          handler.play();
+        }
         break;
       case 'next':
         handler.skipToNext();
@@ -193,5 +212,17 @@ class IslandService with WidgetsBindingObserver {
         _push();
         break;
     }
+  }
+
+  void _onOverlayMessage(dynamic msg) {
+    if (msg is! Map || msg['t'] != 'cmd') return;
+    _command(msg['c']?.toString());
+  }
+
+  Future<void> _onIosCall(MethodCall call) async {
+    if (call.method != 'command') return;
+    final args = call.arguments;
+    final c = args is Map ? args['c']?.toString() : null;
+    _command(c);
   }
 }
