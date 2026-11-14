@@ -61,6 +61,11 @@ class SoundXsAudioHandler extends BaseAudioHandler {
   bool _shuffle = false;
   SxRepeatMode _repeat = SxRepeatMode.off;
 
+  /// Tempo pengguna (0.5x - 2.0x), dikalikan dengan gaya suara.
+  final ValueNotifier<double> tempo = ValueNotifier<double>(1.0);
+  Timer? _sleepTimer;
+  final ValueNotifier<DateTime?> sleepUntil = ValueNotifier<DateTime?>(null);
+
   /// Lagu yang sedang aktif. UI cukup listen ini (otomatis ikut saat auto-next).
   final ValueNotifier<Track?> current = ValueNotifier<Track?>(null);
   final ValueNotifier<bool> shuffleOn = ValueNotifier<bool>(false);
@@ -268,6 +273,30 @@ class SoundXsAudioHandler extends BaseAudioHandler {
 
   // ───────────────────────── Gaya suara ─────────────────────────
 
+  // ───────────── Tempo, volume & timer tidur ─────────────
+  Future<void> setTempo(double v) async {
+    tempo.value = double.parse(v.clamp(0.5, 2.0).toDouble().toStringAsFixed(2));
+    await _applyStyle();
+  }
+
+  Future<void> setVolume(double v) => _player.setVolume(v.clamp(0.0, 1.0).toDouble());
+
+  /// null = matikan timer. Saat waktu habis, pemutaran dijeda.
+  void setSleepTimer(Duration? d) {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    if (d == null) {
+      sleepUntil.value = null;
+      return;
+    }
+    sleepUntil.value = DateTime.now().add(d);
+    _sleepTimer = Timer(d, () {
+      _sleepTimer = null;
+      sleepUntil.value = null;
+      _player.pause();
+    });
+  }
+
   Future<void> setStyle(String s) async {
     style.value = s;
     await _applyStyle();
@@ -295,7 +324,7 @@ class SoundXsAudioHandler extends BaseAudioHandler {
         break;
     }
     try {
-      await _player.setSpeed(speed);
+      await _player.setSpeed(speed * tempo.value);
     } catch (_) {}
     try {
       await _player.setPitch(pitch); // tidak didukung di sebagian platform -> diabaikan
