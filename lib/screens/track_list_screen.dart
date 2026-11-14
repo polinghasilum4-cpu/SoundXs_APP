@@ -3,6 +3,7 @@ import '../globals.dart';
 import '../models/track.dart';
 import '../theme/app_theme.dart';
 import '../widgets/cover_image.dart';
+import '../widgets/download_button.dart';
 import '../widgets/error_retry.dart';
 import '../widgets/shimmer.dart';
 import '../widgets/track_tile.dart';
@@ -62,6 +63,27 @@ class _TrackListScreenState extends State<TrackListScreen> {
     }
   }
 
+  void _downloadAll() {
+    final allowed = _tracks.where((t) => downloads.blockReason(t) == null).toList();
+    final skipped = _tracks.where((t) => t.kind == ItemKind.track).length - allowed.length;
+    final m = ScaffoldMessenger.of(context);
+    m.hideCurrentSnackBar();
+    if (allowed.isEmpty) {
+      m.showSnackBar(const SnackBar(
+        content: Text('Tidak ada lagu di daftar ini yang diizinkan penyedia untuk diunduh.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final n = downloads.enqueueAll(allowed);
+    m.showSnackBar(SnackBar(
+      content: Text(skipped > 0
+          ? '$n lagu masuk antrian unduh. $skipped lagu dilewati (tidak diizinkan penyedia).'
+          : '$n lagu masuk antrian unduh.'),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -84,6 +106,12 @@ class _TrackListScreenState extends State<TrackListScreen> {
                       onPressed: () => Navigator.of(context).pop(),
                     ),
                     const Spacer(),
+                    if (_tracks.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Unduh semua yang diizinkan',
+                        icon: const Icon(Icons.download_for_offline_rounded, color: Colors.white70),
+                        onPressed: _downloadAll,
+                      ),
                     if (widget.playlist != null)
                       AnimatedBuilder(
                         animation: store,
