@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -46,7 +45,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   _PlayerView _view = _PlayerView.cover;
   String _lyricsId = '';
   Future<LyricsResult>? _lyrics;
-  String? _dlId; // id lagu yang sedang diunduh (per-lagu, bukan bool global)
+  bool _downloading = false;
 
   @override
   void initState() {
@@ -537,9 +536,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 _actionBtn(Icons.queue_music_rounded, 'Antrian', _showQueue),
                 _actionBtn(
                   offline ? Icons.download_done_rounded : Icons.download_rounded,
-                  offline ? 'Tersimpan' : (_dlId == t.id ? 'Mengunduh…' : 'Unduh'),
-                  offline || _dlId == t.id ? null : () => _downloadOffline(t),
-                  active: offline || _dlId == t.id,
+                  offline ? 'Tersimpan' : (_downloading ? 'Mengunduh…' : 'Unduh'),
+                  offline || _downloading ? null : () => _downloadOffline(t),
+                  active: offline || _downloading,
                 ),
                 _actionBtn(Icons.share_rounded, 'Bagikan', () => _copyLink(t)),
                 _actionBtn(Icons.bedtime_rounded, until == null ? 'Tidur' : 'Aktif', _showSleep,
@@ -560,8 +559,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _downloadOffline(Track t) async {
-    if (_dlId != null || store.isOffline(t.id)) return;
-    setState(() => _dlId = t.id);
+    if (_downloading || store.isOffline(t.id)) return;
+    setState(() => _downloading = true);
     try {
       Track src = t;
       try {
@@ -606,19 +605,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
       } else {
         // HLS SoundCloud: #EXT-X-MAP init.mp4 + dataXXX.m4s
         final playlistBody = resp.body;
-        // URL final playlist (setelah redirect) dipakai resolve relatif — proxy sudah absolute
-        final base = proxyUrl;
-
-        final initUri = _pickMapUri(playlistBody);
-        final segs = _pickAllSegmentsFromM3u8(playlistBody, base);
+        if (RegExp(r'#EXT-X-KEY:.*METHOD=(?!NONE)', caseSensitive: false).hasMatch(playlistBody)) {
+          throw Exception('Stream offline memakai enkripsi yang belum didukung');
+        }
+        // Resolve URL relatif dari URL playlist final setelah redirect CDN.
+        final finalPlaylistUrl = resp.request?.url.toString() ?? proxyUrl;
+        final initRaw = _pickMapUri(playlistBody);
+        final initUri = initRaw == null ? null : Uri.parse(finalPlaylistUrl).resolve(initRaw).toString();
+        final segs = _pickAllSegmentsFromM3u8(playlistBody, finalPlaylistUrl);
         if (segs.isEmpty && initUri == null) {
           // Coba nested media playlist
           final nested = _pickMediaFromM3u8(playlistBody, base);
           if (nested == null) throw Exception('Playlist HLS kosong');
           final nestedResp = await get(nested, sec: 60);
+          if (nestedResp.statusCode < 200 || nestedResp.statusCode >= 400) {
+            throw Exception('Gagal membuka playlist audio (${nestedResp.statusCode})');
+          }
           final body2 = nestedResp.body;
-          final init2 = _pickMapUri(body2);
-          final segs2 = _pickAllSegmentsFromM3u8(body2, nested);
+          if (RegExp(r'#EXT-X-KEY:.*METHOD=(?!NONE)', caseSensitive: false).hasMatch(body2)) {
+            throw Exception('Stream offline memakai enkripsi yang belum didukung');
+          }
+          final nestedBase = nestedResp.request?.url.toString() ?? nested;
+          final init2Raw = _pickMapUri(body2);
+          final init2 = init2Raw == null ? null : Uri.parse(nestedBase).resolve(init2Raw).toString();
+          final segs2 = _pickAllSegmentsFromM3u8(body2, nestedBase);
           if (segs2.isEmpty) throw Exception('Tidak ada segmen audio');
           bytes = await _downloadHlsParts(get, init2, segs2);
         } else {
@@ -644,8 +654,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
 
       store.markOffline(src, file.path);
-      // simpan lirik ke disk juga, supaya lirik bisa dibaca saat offline
-      unawaited(_api.getLyrics(src).catchError((_) => const LyricsResult([], false)));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -665,7 +673,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _dlId = null);
+      if (mounted) setState(() => _downloading = false);
     }
   }
 
@@ -675,28 +683,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
     String? initUri,
     List<String> segs,
   ) async {
-    // Batasi lagu sangat panjang agar tidak menggantung (≈15 menit @10s/segmen)
-    final take = segs.length > 90 ? segs.sublist(0, 90) : segs;
+    // Jangan potong playlist: track panjang harus tersimpan utuh untuk offline.
+    // Batas defensif mencegah playlist rusak memicu unduhan tanpa akhir.
+    if (segs.isEmpty) throw Exception('Playlist tidak memiliki segmen audio');
+    if (segs.length > 1800) throw Exception('Playlist terlalu besar atau tidak valid');
     final buf = BytesBuilder(copy: false);
 
     if (initUri != null && initUri.isNotEmpty) {
       final r = await get(initUri, sec: 40);
-      if (r.statusCode >= 200 && r.statusCode < 400) {
+      if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
         buf.add(r.bodyBytes);
+      } else {
+        throw Exception('Gagal mengunduh bagian awal audio');
       }
     }
 
     var ok = 0;
-    for (final seg in take) {
-      try {
-        final r = await get(seg, sec: 30);
-        if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
-          buf.add(r.bodyBytes);
-          ok++;
-        }
-      } catch (_) {}
+    for (final seg in segs) {
+      final r = await get(seg, sec: 45);
+      if (r.statusCode < 200 || r.statusCode >= 400 || r.bodyBytes.isEmpty) {
+        throw Exception('Gagal mengunduh segmen audio ($ok/${segs.length})');
+      }
+      buf.add(r.bodyBytes);
+      ok++;
     }
-    if (ok == 0) throw Exception('Gagal mengunduh segmen audio');
+    if (ok != segs.length) throw Exception('Unduhan audio belum lengkap');
     return buf.toBytes();
   }
 
@@ -712,9 +723,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     for (final raw in lines) {
       final line = raw.trim();
       if (line.isEmpty || line.startsWith('#')) continue;
-      final abs = line.startsWith('http')
-          ? line
-          : Uri.parse(baseUrl).resolve(line).toString();
+      final abs = Uri.parse(baseUrl).resolve(line).toString();
       candidates.add(abs);
     }
     if (candidates.isEmpty) return null;
@@ -731,9 +740,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final line = raw.trim();
       if (line.isEmpty || line.startsWith('#')) continue;
       if (line.toLowerCase().contains('.m3u8')) continue;
-      final abs = line.startsWith('http')
-          ? line
-          : Uri.parse(baseUrl).resolve(line).toString();
+      final abs = Uri.parse(baseUrl).resolve(line).toString();
       out.add(abs);
     }
     return out;
