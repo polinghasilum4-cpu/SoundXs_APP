@@ -20,7 +20,6 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await store.load();
-  await downloads.load();
   Perf.instance.start(PerfMode.values[store.perfMode]);
 
   // Hanya SATU inisialisasi: AudioService. (Versi lama memanggil JustAudioBackground.init
@@ -31,16 +30,17 @@ Future<void> main() async {
       androidNotificationChannelId: 'com.soundxs.app.channel.audio',
       androidNotificationChannelName: 'SoundXs Playback',
       androidNotificationOngoing: true,
+      // tetap foreground saat pause: tombol notifikasi & island tidak hilang setelah jeda
+      androidStopForegroundOnPause: false,
     ),
   );
-  audioHandler
-    ..onTrackStarted = store.recordPlay
-    ..localAudio = downloads.localAudio
-    ..localCover = downloads.localCover
-    ..isLiked = ((t) => store.isLiked(t.id))
-    ..toggleLike = store.toggleLike;
-  // Tombol like di notifikasi / Island ikut berubah saat daftar disukai berubah.
-  store.addListener(audioHandler.refreshState);
+  audioHandler.onTrackStarted = store.recordPlay;
+  audioHandler.isLikedFn = (id) => store.isLiked(id);
+  audioHandler.onLikeRequested = () {
+    final t = audioHandler.current.value;
+    if (t != null) store.toggleLike(t);
+  };
+  store.addListener(audioHandler.refreshControls);
 
   try {
     final session = await AudioSession.instance;
