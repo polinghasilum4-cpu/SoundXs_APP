@@ -42,7 +42,7 @@ class ApiService {
   factory ApiService() => _instance;
 
   static const _api = '/api';
-  static const _timeout = Duration(seconds: 15);
+  static const _timeout = Duration(seconds: 28);
   static const _ttl = Duration(minutes: 5);
 
   final http.Client _http = http.Client();
@@ -195,32 +195,87 @@ class ApiService {
     return null;
   }
 
-  /// Lirik dari /api/lyrics. Kalau sumbernya LRCLIB, `synced` = true dan tiap baris punya waktu (detik).
-  Future<LyricsResult> getLyrics(Track t) async {
-    final params = <String, String>{
-      'title': t.title,
-      'artist': t.artist,
-      if (t.durationMs > 0) 'duration': (t.durationMs / 1000).round().toString(),
-    };
-    final data = await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params));
-    if (data is! Map || data['success'] != true) return const LyricsResult([], false);
-    final raw = data['lines'];
-    if (raw is! List) return const LyricsResult([], false);
-    final wantSynced = data['synced'] == true;
-    final out = <LyricLine>[];
-    for (final e in raw) {
-      if (e is! Map) continue;
-      final text = (e['text'] ?? '').toString().trim();
-      if (text.isEmpty) continue;
-      final tSec = e['t'];
-      final endSec = e['end'];
-      out.add(LyricLine(
-        startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
-        endMs: endSec is num ? endSec.toDouble() * 1000 : null,
-        text: text,
-      ));
+  /// Bersihkan judul SoundCloud yang berantakan (emoji, tahun, tag viral, dll).
+  static String cleanTitle(String raw) {
+    var s = raw;
+    // Buang emoji (non-BMP) & simbol
+    s = s.replaceAll(RegExp(r'[\u{10000}-\u{10FFFF}]', unicode: true), ' ');
+    s = s.replaceAll(RegExp(r'[\u2600-\u27BF\uFE0F\u200D]'), ' ');
+    s = s.replaceAll(RegExp(r'\([^)]*\)|\[[^\]]*\]'), ' ');
+    s = s.replaceAll(
+      RegExp(
+        r'(?i)\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
+      ),
+      ' ',
+    );
+    s = s.replaceAll(RegExp(r'\b20[0-3][0-9]\b'), ' ');
+    if (s.contains(' - ')) {
+      final parts = s.split(' - ');
+      if (parts.first.trim().length >= 2) s = parts.first;
     }
-    final synced = wantSynced && out.isNotEmpty && out.every((l) => l.startMs >= 0);
-    return LyricsResult(out, synced);
+    s = s.replaceAll(RegExp(r'[|_~•·]+'), ' ');
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return s;
+  }
+
+  static String cleanArtist(String raw) {
+    var s = raw.replaceAll(RegExp(r'[\u{10000}-\u{10FFFF}]', unicode: true), ' ');
+    s = s.replaceAll(RegExp(r'[\u2600-\u27BF\uFE0F]'), ' ');
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return s;
+  }
+
+  /// Lirik dari /api/lyrics (LRCLIB). Coba beberapa variasi judul/artis.
+  Future<LyricsResult> getLyrics(Track t) async {
+    final title0 = cleanTitle(t.title);
+    final artist0 = cleanArtist(t.artist);
+    final duration = t.durationMs > 0 ? (t.durationMs / 1000).round().toString() : null;
+
+    // Variasi query: judul bersih, judul asli pendek, tanpa artis, dll.
+    final attempts = <({String title, String artist})>[
+      (title: title0.isNotEmpty ? title0 : t.title, artist: artist0),
+      if (title0.contains(' '))
+        (title: title0.split(' ').take(4).join(' '), artist: artist0),
+      (title: title0.isNotEmpty ? title0 : t.title, artist: ''),
+      (title: t.title.length > 60 ? t.title.substring(0, 60) : t.title, artist: artist0),
+    ];
+
+    LyricsResult? best;
+    for (final a in attempts) {
+      if (a.title.trim().length < 2) continue;
+      try {
+        final params = <String, String>{
+          'title': a.title.trim(),
+          if (a.artist.trim().isNotEmpty) 'artist': a.artist.trim(),
+          if (duration != null) 'duration': duration,
+        };
+        final data = await _getJson(
+          Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params),
+        );
+        if (data is! Map || data['success'] != true) continue;
+        final raw = data['lines'];
+        if (raw is! List || raw.isEmpty) continue;
+        final wantSynced = data['synced'] == true;
+        final out = <LyricLine>[];
+        for (final e in raw) {
+          if (e is! Map) continue;
+          final text = (e['text'] ?? '').toString().trim();
+          if (text.isEmpty) continue;
+          final tSec = e['t'];
+          final endSec = e['end'];
+          out.add(LyricLine(
+            startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
+            endMs: endSec is num ? endSec.toDouble() * 1000 : null,
+            text: text,
+          ));
+        }
+        if (out.isEmpty) continue;
+        final synced = wantSynced && out.every((l) => l.startMs >= 0);
+        final result = LyricsResult(out, synced);
+        if (synced) return result; // prioritas synced
+        best ??= result;
+      } catch (_) {}
+    }
+    return best ?? const LyricsResult([], false);
   }
 }
