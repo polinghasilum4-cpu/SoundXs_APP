@@ -3,11 +3,11 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
-/// Lirik yang ngikutin audio (gaya Auralys):
-///  - baris aktif di tengah, besar dan terang; baris sekitarnya pudar
-///  - scroll mengikuti baris aktif dengan animasi halus
-///  - ketuk baris untuk loncat ke waktu itu
-///  - kalau user scroll manual, auto-follow berhenti sebentar lalu lanjut lagi
+/// Lirik sinkron gaya Spotify:
+///  - baris aktif besar, putih, fill kiri → kanan sesuai progress baris
+///  - baris sekitar lebih besar dari sebelumnya, pudar
+///  - scroll mengikuti baris aktif
+///  - ketuk baris untuk seek
 class SyncedLyrics extends StatefulWidget {
   const SyncedLyrics({
     super.key,
@@ -32,6 +32,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
   final _scroll = ScrollController();
   late final List<GlobalKey> _keys = List.generate(widget.lines.length, (_) => GlobalKey());
   int _active = -1;
+  double _lineProgress = 0; // 0..1 fill kiri→kanan baris aktif
   StreamSubscription<Duration>? _sub;
   Timer? _resume;
   bool _userDragging = false;
@@ -40,6 +41,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
   void initState() {
     super.initState();
     _active = _indexAt(widget.current.inMilliseconds.toDouble());
+    _lineProgress = _progressAt(widget.current.inMilliseconds.toDouble(), _active);
     if (widget.synced) {
       _sub = widget.position.listen(_onPos);
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -56,7 +58,6 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     super.dispose();
   }
 
-  /// Cari baris terakhir yang startMs-nya <= posisi (binary search).
   int _indexAt(double ms) {
     if (!widget.synced || widget.lines.isEmpty) return -1;
     var lo = 0;
@@ -73,18 +74,41 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     }
     if (ans >= 0) {
       final end = widget.lines[ans].endMs;
-      // jeda instrumental panjang: tidak ada baris yang disorot
       if (end != null && ms > end + 1500) return -1;
     }
     return ans;
   }
 
+  double _progressAt(double ms, int i) {
+    if (i < 0 || i >= widget.lines.length) return 0;
+    final line = widget.lines[i];
+    final start = line.startMs;
+    double end;
+    if (line.endMs != null) {
+      end = line.endMs!;
+    } else if (i + 1 < widget.lines.length) {
+      end = widget.lines[i + 1].startMs;
+    } else {
+      end = start + 4000;
+    }
+    if (end <= start) return 1;
+    return ((ms - start) / (end - start)).clamp(0.0, 1.0);
+  }
+
   void _onPos(Duration p) {
     if (!mounted) return;
-    final i = _indexAt(p.inMilliseconds.toDouble());
-    if (i == _active) return; // setState hanya saat baris berganti
-    setState(() => _active = i);
-    if (i >= 0 && !_userDragging) _follow(i);
+    final ms = p.inMilliseconds.toDouble();
+    final i = _indexAt(ms);
+    final prog = _progressAt(ms, i);
+    final lineChanged = i != _active;
+    // Update progress sering untuk animasi fill; setState ringan
+    if (lineChanged || (i >= 0 && (prog - _lineProgress).abs() > 0.02)) {
+      setState(() {
+        _active = i;
+        _lineProgress = prog;
+      });
+      if (lineChanged && i >= 0 && !_userDragging) _follow(i);
+    }
   }
 
   void _follow(int i, {bool instant = false}) {
@@ -93,8 +117,8 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     if (ctx == null) return;
     Scrollable.ensureVisible(
       ctx,
-      alignment: 0.5,
-      duration: instant ? Duration.zero : const Duration(milliseconds: 700),
+      alignment: 0.45,
+      duration: instant ? Duration.zero : const Duration(milliseconds: 650),
       curve: Curves.easeInOutCubic,
     );
   }
@@ -121,20 +145,20 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     }
     return LayoutBuilder(
       builder: (context, c) {
-        final pad = c.maxHeight * 0.42; // ruang atas-bawah supaya baris pertama/terakhir bisa ke tengah
+        final pad = c.maxHeight * 0.38;
         return ShaderMask(
           shaderCallback: (r) => const LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [Colors.transparent, Colors.white, Colors.white, Colors.transparent],
-            stops: [0.0, 0.16, 0.84, 1.0],
+            stops: [0.0, 0.12, 0.88, 1.0],
           ).createShader(r),
           blendMode: BlendMode.dstIn,
           child: NotificationListener<ScrollNotification>(
             onNotification: _onScroll,
             child: SingleChildScrollView(
               controller: _scroll,
-              padding: EdgeInsets.symmetric(vertical: pad, horizontal: 12),
+              padding: EdgeInsets.symmetric(vertical: pad, horizontal: 8),
               child: Column(
                 children: [for (var i = 0; i < widget.lines.length; i++) _line(i)],
               ),
@@ -147,33 +171,130 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
 
   Widget _line(int i) {
     final l = widget.lines[i];
-    final TextStyle style;
+    final isActive = widget.synced && i == _active;
+
     if (!widget.synced) {
-      style = const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: Colors.white70, height: 1.4);
-    } else {
-      final d = _active < 0 ? 99 : (i - _active).abs();
-      if (d == 0) {
-        style = const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: Colors.white, height: 1.3);
-      } else if (d == 1) {
-        style = const TextStyle(fontSize: 21, fontWeight: FontWeight.w700, color: Color(0x8CFFFFFF), height: 1.35);
-      } else {
-        style = const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: Color(0x40FFFFFF), height: 1.35);
-      }
+      return KeyedSubtree(
+        key: _keys[i],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          child: Text(
+            l.text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              height: 1.4,
+            ),
+          ),
+        ),
+      );
     }
+
+    final d = _active < 0 ? 99 : (i - _active).abs();
+    final double size;
+    final Color dimColor;
+    final FontWeight weight;
+    // Ukuran lebih besar + putih tegas (mirip Spotify)
+    if (d == 0) {
+      size = 34;
+      dimColor = const Color(0x66FFFFFF);
+      weight = FontWeight.w900;
+    } else if (d == 1) {
+      size = 26;
+      dimColor = const Color(0xBBFFFFFF);
+      weight = FontWeight.w700;
+    } else if (d == 2) {
+      size = 22;
+      dimColor = const Color(0x77FFFFFF);
+      weight = FontWeight.w600;
+    } else {
+      size = 20;
+      dimColor = const Color(0x44FFFFFF);
+      weight = FontWeight.w600;
+    }
+
+    final baseStyle = TextStyle(
+      fontSize: size,
+      fontWeight: weight,
+      color: dimColor,
+      height: 1.35,
+    );
+    final fillStyle = TextStyle(
+      fontSize: size,
+      fontWeight: weight,
+      color: Colors.white,
+      height: 1.35,
+    );
+
     return KeyedSubtree(
       key: _keys[i],
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: widget.synced ? () => widget.onSeek(Duration(milliseconds: l.startMs.round())) : null,
+        onTap: () => widget.onSeek(Duration(milliseconds: l.startMs.round())),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 380),
-            curve: Curves.easeOutCubic,
-            style: style,
-            textAlign: TextAlign.center,
-            child: Text(l.text, textAlign: TextAlign.center),
-          ),
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          child: isActive
+              ? _KaraokeLine(
+                  text: l.text,
+                  progress: _lineProgress,
+                  baseStyle: baseStyle,
+                  fillStyle: fillStyle,
+                )
+              : AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOutCubic,
+                  style: baseStyle,
+                  textAlign: TextAlign.center,
+                  child: Text(l.text, textAlign: TextAlign.center),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fill putih kiri → kanan (mirip Spotify karaoke) lewat gradient mask.
+class _KaraokeLine extends StatelessWidget {
+  const _KaraokeLine({
+    required this.text,
+    required this.progress,
+    required this.baseStyle,
+    required this.fillStyle,
+  });
+
+  final String text;
+  final double progress;
+  final TextStyle baseStyle;
+  final TextStyle fillStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = progress.clamp(0.0, 1.0);
+    // Fill putih kiri → kanan (karaoke Spotify): bagian terisi putih penuh, sisa abu
+    final soft = (p + 0.06).clamp(0.0, 1.0);
+    return ShaderMask(
+      blendMode: BlendMode.srcIn,
+      shaderCallback: (bounds) {
+        return LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: const [
+            Colors.white,
+            Colors.white,
+            Color(0x88FFFFFF),
+            Color(0x55FFFFFF),
+          ],
+          stops: [0.0, p.clamp(0.0, 0.999), soft, 1.0],
+        ).createShader(bounds);
+      },
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: fillStyle.copyWith(
+          color: Colors.white,
+          fontWeight: FontWeight.w900,
         ),
       ),
     );
