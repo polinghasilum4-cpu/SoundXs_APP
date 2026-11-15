@@ -1,9 +1,11 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import '../core/perf.dart';
 import '../globals.dart';
 import '../models/track.dart';
@@ -560,7 +562,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_downloading || store.isOffline(t.id)) return;
     setState(() => _downloading = true);
     try {
-      // Selalu refresh dulu (stream_url SoundCloud cepat kedaluwarsa)
+      // Refresh stream (SoundCloud URL cepat kedaluwarsa)
       Track src = t;
       try {
         final fresh = await _api.refresh(t);
@@ -571,132 +573,121 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final proxyUrl = await _api.proxiedStream(src);
       if (proxyUrl.isEmpty) throw Exception('URL stream kosong');
 
-      final client = http.Client();
-      try {
-        final headers = <String, String>{
-          'User-Agent':
-              'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
-          'Accept': '*/*',
-        };
+      final headers = <String, String>{
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+        'Accept': '*/*',
+      };
 
-        Future<http.StreamedResponse> get(String url) async {
-          final req = http.Request('GET', Uri.parse(url));
-          req.headers.addAll(headers);
-          return client.send(req).timeout(const Duration(seconds: 90));
+      // 1) Coba unduh langsung lewat proxy (ikuti redirect ke CDN)
+      final resp = await http
+          .get(Uri.parse(proxyUrl), headers: headers)
+          .timeout(const Duration(seconds: 90));
+
+      if (resp.statusCode < 200 || resp.statusCode >= 400) {
+        throw Exception('Server stream error (${resp.statusCode})');
+      }
+
+      final ctype = (resp.headers['content-type'] ?? '').toLowerCase();
+      var bytes = resp.bodyBytes;
+      final head = bytes.length > 12
+          ? String.fromCharCodes(bytes.take(12))
+          : String.fromCharCodes(bytes);
+      final isM3u = head.trimLeft().startsWith('#EXT') ||
+          ctype.contains('mpegurl') ||
+          ctype.contains('x-mpegurl');
+
+      if (isM3u) {
+        // 2) Playlist: ambil URL media / segmen
+        final body = resp.body;
+        final mediaUrl = _pickMediaFromM3u8(body, proxyUrl);
+        if (mediaUrl == null) {
+          throw Exception('Tidak ada media di playlist');
         }
 
-        var streamed = await get(proxyUrl);
-        if (streamed.statusCode < 200 || streamed.statusCode >= 400) {
-          throw Exception('Server stream error (${streamed.statusCode})');
+        var mediaResp = await http
+            .get(Uri.parse(mediaUrl), headers: headers)
+            .timeout(const Duration(seconds: 90));
+
+        var mediaCtype = (mediaResp.headers['content-type'] ?? '').toLowerCase();
+        var mediaBytes = mediaResp.bodyBytes;
+        var mediaHead = mediaBytes.length > 12
+            ? String.fromCharCodes(mediaBytes.take(12))
+            : String.fromCharCodes(mediaBytes);
+
+        // Nested playlist sekali lagi
+        if (mediaHead.trimLeft().startsWith('#EXT') || mediaCtype.contains('mpegurl')) {
+          final nested = _pickMediaFromM3u8(mediaResp.body, mediaUrl);
+          if (nested != null && !nested.toLowerCase().contains('.m3u8')) {
+            mediaResp = await http
+                .get(Uri.parse(nested), headers: headers)
+                .timeout(const Duration(seconds: 90));
+            mediaCtype = (mediaResp.headers['content-type'] ?? '').toLowerCase();
+            mediaBytes = mediaResp.bodyBytes;
+            mediaHead = mediaBytes.length > 12
+                ? String.fromCharCodes(mediaBytes.take(12))
+                : String.fromCharCodes(mediaBytes);
+          }
         }
 
-        var ctype = (streamed.headers['content-type'] ?? '').toLowerCase();
-        // Hanya andalkan Content-Type aktual, bukan label streamType dari API
-        // (banyak track berlabel "hls" tapi proxy mengembalikan progressive).
-        final looksPlaylist = ctype.contains('mpegurl') ||
-            ctype.contains('x-mpegurl') ||
-            ctype.contains('vnd.apple.mpegurl');
-
-        late Uint8List bytes;
-
-        if (looksPlaylist || ctype.contains('mpegurl')) {
-          // Baca playlist; cari URL media (bisa nested master → media playlist → segmen)
-          var body = await streamed.stream.bytesToString();
-          var mediaUrl = _pickMediaFromM3u8(body, proxyUrl);
-          if (mediaUrl == null) {
+        // Masih playlist → gabung segmen (batas 120 segmen agar tidak menggantung)
+        if (mediaHead.trimLeft().startsWith('#EXT') || mediaCtype.contains('mpegurl')) {
+          final segs = _pickAllSegmentsFromM3u8(mediaResp.body, mediaUrl);
+          if (segs.isEmpty) {
+            throw Exception('HLS tanpa segmen audio');
+          }
+          final take = segs.length > 120 ? segs.sublist(0, 120) : segs;
+          final buf = BytesBuilder(copy: false);
+          for (final seg in take) {
             try {
-              final file = await DefaultCacheManager().getSingleFile(proxyUrl, key: 'sx_offline_${t.id}');
-              if (await file.length() > 80 * 1024) {
-                store.markOffline(src, file.path);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Lagu disimpan untuk offline'),
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
-                }
-                return;
+              final r = await http
+                  .get(Uri.parse(seg), headers: headers)
+                  .timeout(const Duration(seconds: 25));
+              if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
+                buf.add(r.bodyBytes);
               }
             } catch (_) {}
-            throw Exception('Tidak menemukan file audio dari playlist');
           }
-          // Resolve sampai 2 level nested m3u8
-          for (var depth = 0; depth < 2; depth++) {
-            streamed = await get(mediaUrl!);
-            if (streamed.statusCode < 200 || streamed.statusCode >= 400) {
-              throw Exception('Gagal unduh media (${streamed.statusCode})');
-            }
-            ctype = (streamed.headers['content-type'] ?? '').toLowerCase();
-            if (!ctype.contains('mpegurl') && !ctype.contains('x-mpegurl')) {
-              break;
-            }
-            body = await streamed.stream.bytesToString();
-            final next = _pickMediaFromM3u8(body, mediaUrl);
-            if (next == null || next == mediaUrl) {
-              throw Exception('Stream HLS bersegmen — unduh offline tidak didukung untuk track ini');
-            }
-            mediaUrl = next;
-          }
-          if (ctype.contains('mpegurl') || ctype.contains('x-mpegurl')) {
-            // Masih playlist: coba unduh semua segmen pendek jadi satu file (maks 200 segmen)
-            body = body.isNotEmpty ? body : await streamed.stream.bytesToString();
-            final segs = _pickAllSegmentsFromM3u8(body, mediaUrl ?? proxyUrl);
-            if (segs.isEmpty) {
-              throw Exception('Stream HLS bersegmen — tidak ada segmen audio');
-            }
-            if (segs.length > 250) {
-              throw Exception('Stream HLS terlalu banyak segmen untuk offline');
-            }
-            final buf = BytesBuilder(copy: false);
-            for (final seg in segs) {
-              final r = await get(seg);
-              if (r.statusCode < 200 || r.statusCode >= 400) continue;
-              buf.add(await r.stream.toBytes());
-            }
-            bytes = buf.toBytes();
-            ctype = 'audio/mp4';
-          } else {
-            bytes = Uint8List.fromList(await streamed.stream.toBytes());
-          }
+          bytes = buf.toBytes();
         } else {
-          bytes = Uint8List.fromList(await streamed.stream.toBytes());
+          bytes = mediaBytes;
         }
+      }
 
-        if (bytes.length < 20 * 1024) {
-          throw Exception('File terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
-        }
+      if (bytes.length < 40 * 1024) {
+        throw Exception(
+            'File terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB). Stream mungkin HLS penuh.');
+      }
 
-        final ext = (ctype.contains('mpeg') || ctype.contains('mp3'))
-            ? 'mp3'
-            : (ctype.contains('mp4') || ctype.contains('m4a') || ctype.contains('aac'))
-                ? 'm4a'
-                : 'audio';
+      final ext = ctype.contains('mpeg') || ctype.contains('mp3')
+          ? 'mp3'
+          : (ctype.contains('mp4') || ctype.contains('m4a') || ctype.contains('aac'))
+              ? 'm4a'
+              : 'audio';
 
-        final file = await DefaultCacheManager().putFile(
-          'sx_offline_${t.id}',
-          bytes,
-          key: 'sx_offline_${t.id}',
-          fileExtension: ext,
-          maxAge: const Duration(days: 365),
+      // Simpan permanen di folder app (bukan cache yang bisa dihapus sistem)
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory('${docs.path}/soundxs_offline');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final safeId = t.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final file = File('${dir.path}/$safeId.$ext');
+      final data = bytes is Uint8List ? bytes as Uint8List : Uint8List.fromList(bytes);
+      await file.writeAsBytes(data, flush: true);
+
+      if (!await file.exists() || await file.length() < 40 * 1024) {
+        throw Exception('Gagal menyimpan file ke disk');
+      }
+
+      // Path file + metadata track disimpan di SharedPreferences (mirip localStorage)
+      store.markOffline(src, file.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Lagu disimpan offline (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)'),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
-
-        if (!await file.exists() || await file.length() < 20 * 1024) {
-          throw Exception('Gagal menyimpan file ke disk');
-        }
-
-        store.markOffline(src, file.path);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  'Lagu disimpan offline (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      } finally {
-        client.close();
       }
     } catch (e) {
       if (mounted) {
@@ -712,7 +703,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  /// Ambil URL media dari isi m3u8 (prefer http(s) non-playlist).
+  /// Ambil URL media dari isi m3u8 (prefer non-playlist).
   String? _pickMediaFromM3u8(String body, String baseUrl) {
     final lines = body.split(RegExp(r'\r?\n'));
     final candidates = <String>[];
@@ -725,15 +716,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
       candidates.add(abs);
     }
     if (candidates.isEmpty) return null;
-    // Prefer yang bukan .m3u8
     for (final u in candidates) {
       if (!u.toLowerCase().contains('.m3u8')) return u;
     }
-    // Nested playlist: ambil yang terakhir (biasanya bitrate tertinggi)
     return candidates.last;
   }
 
-  /// Semua URL segmen dari media playlist (bukan master).
+  /// Semua URL segmen dari media playlist.
   List<String> _pickAllSegmentsFromM3u8(String body, String baseUrl) {
     final lines = body.split(RegExp(r'\r?\n'));
     final out = <String>[];
