@@ -13,7 +13,11 @@ import 'library_store.dart';
 
 /// Dynamic Island lintas platform.
 ///  - Android: overlay melayang di atas aplikasi lain (flutter_overlay_window).
-///  - iOS: Live Activity (tampil di Dynamic Island iPhone 14 Pro ke atas) lewat MethodChannel.
+///  - iOS: Live Activity di Dynamic Island / Lock Screen (lewat MethodChannel + App Intents).
+///
+/// Perintah kontrol (toggle / next / prev) datang dari dua tempat:
+///  - Android: pesan dari overlay.
+///  - iOS: tombol Live Activity -> App Intent -> App Group -> notifikasi Darwin -> native kirim 'command' ke sini.
 class IslandService with WidgetsBindingObserver {
   IslandService(this.handler, this.store);
 
@@ -28,37 +32,23 @@ class IslandService with WidgetsBindingObserver {
 
   bool _background = false;
   bool _overlayOn = false;
-  bool _overlayExpanded = false; // dilaporkan oleh overlay
   bool _busy = false;
-  bool _pending = false; // ada sync yang masuk saat _busy -> jalankan ulang (dulu hilang = bug)
+  bool _pending = false; // ada permintaan sync saat sedang sibuk -> jalankan lagi setelahnya
   String? _lastTrackId;
   Timer? _debounce;
-  Timer? _posTimer;
-  final List<StreamSubscription<dynamic>> _subs = [];
 
   void init() {
     if (!supported) return;
     WidgetsBinding.instance.addObserver(this);
     handler.current.addListener(_onTrackChanged);
-    handler.shuffleOn.addListener(_push);
-    _subs.add(handler.player.playingStream.distinct().listen((_) => _push()));
-    _subs.add(handler.player.durationStream.distinct().listen((_) => _push()));
+    handler.player.playingStream.distinct().listen((_) => _push());
     store.addListener(_onSettings);
     if (_isAndroid) {
-      _subs.add(FlutterOverlayWindow.overlayListener.listen(_onOverlayMessage));
+      FlutterOverlayWindow.overlayListener.listen(_onOverlayMessage);
     }
-  }
-
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    handler.current.removeListener(_onTrackChanged);
-    handler.shuffleOn.removeListener(_push);
-    store.removeListener(_onSettings);
-    for (final s in _subs) {
-      s.cancel();
+    if (_isIos) {
+      _iosChannel.setMethodCallHandler(_onIosCall);
     }
-    _debounce?.cancel();
-    _posTimer?.cancel();
   }
 
   // ───────────── Izin (Android) ─────────────
@@ -108,6 +98,7 @@ class IslandService with WidgetsBindingObserver {
   }
 
   Future<void> _doSync(bool force) async {
+    // Versi lama membuang permintaan saat sedang sibuk -> overlay bisa tidak muncul. Sekarang diantrikan.
     if (_busy) {
       _pending = true;
       return;
@@ -116,10 +107,6 @@ class IslandService with WidgetsBindingObserver {
     try {
       final hasTrack = handler.current.value != null;
       if (_isAndroid) {
-        // Overlay bisa ditutup sistem/pengguna di luar kendali kita -> cek status asli.
-        try {
-          _overlayOn = await FlutterOverlayWindow.isActive();
-        } catch (_) {}
         final want = store.islandOn && _background && hasTrack;
         if (want && !_overlayOn) {
           if (!await hasPermission()) return;
@@ -132,20 +119,17 @@ class IslandService with WidgetsBindingObserver {
             overlayContent: 'Dynamic Island aktif',
           );
           _overlayOn = true;
-          _overlayExpanded = false;
           await Future<void>.delayed(const Duration(milliseconds: 350));
           _push();
         } else if (!want && _overlayOn) {
           await FlutterOverlayWindow.closeOverlay();
           _overlayOn = false;
-          _overlayExpanded = false;
-          _stopPosTimer();
         } else if (want && _overlayOn && force) {
           _push(); // pengaturan berubah -> kirim ulang
         }
       } else if (_isIos) {
         if (store.islandOn && hasTrack) {
-          _push();
+          await _push();
         } else {
           await _iosChannel.invokeMethod('end');
         }
@@ -156,14 +140,13 @@ class IslandService with WidgetsBindingObserver {
       _busy = false;
       if (_pending) {
         _pending = false;
-        _sync(force: force);
+        _sync();
       }
     }
   }
 
   // ───────────── Kirim state ke overlay / Live Activity ─────────────
   Future<void> _push({bool pop = false}) async {
-    if (!_overlayOn && !_isIos) return;
     final t = handler.current.value;
     if (t == null || !store.islandOn) return;
     try {
@@ -189,8 +172,6 @@ class IslandService with WidgetsBindingObserver {
         'offset': store.islandOffset,
         'pop': pop,
         'lite': Perf.instance.lite.value,
-        'shuffle': handler.isShuffle,
-        'liked': store.isLiked(t.id),
       };
 
   Future<void> _pushIos(Track t) async {
@@ -211,65 +192,42 @@ class IslandService with WidgetsBindingObserver {
     });
   }
 
-  // ───────────── Perintah dari overlay ─────────────
-  // Semua perintah diteruskan ke AudioHandler asli; overlay tidak punya state pemutaran sendiri.
+  // ───────────── Perintah kontrol (dari overlay Android & tombol iOS) ─────────────
+  void _command(String? c) {
+    try {
+      switch (c) {
+        case 'toggle':
+          if (handler.player.playing) {
+            handler.pause();
+          } else {
+            handler.play();
+          }
+          break;
+        case 'next':
+          handler.skipToNext();
+          break;
+        case 'prev':
+          handler.skipToPrevious();
+          break;
+        case 'sync':
+          break;
+      }
+    } catch (e) {
+      debugPrint('IslandService command error ($c): $e');
+    }
+    // kirim status SEBENARNYA setelah perintah (overlay tidak menebak sendiri)
+    Future<void>.delayed(const Duration(milliseconds: 120), () => _push());
+  }
+
   void _onOverlayMessage(dynamic msg) {
     if (msg is! Map || msg['t'] != 'cmd') return;
-    switch (msg['c']) {
-      case 'toggle':
-        handler.player.playing ? handler.pause() : handler.play();
-        break;
-      case 'next':
-        handler.skipToNext();
-        break;
-      case 'prev':
-        handler.skipToPrevious();
-        break;
-      case 'shuffle':
-        handler.toggleShuffle(); // listener shuffleOn -> _push
-        break;
-      case 'like':
-        final t = handler.current.value;
-        if (t != null) {
-          store.toggleLike(t); // store listener -> sync(force) -> _push
-          _push();
-        }
-        break;
-      case 'seek':
-        final v = (msg['v'] as num?)?.toInt();
-        if (v != null && v >= 0) {
-          handler.seek(Duration(milliseconds: v)).then((_) => _push());
-        }
-        break;
-      case 'expanded':
-        _overlayExpanded = msg['v'] == true;
-        if (_overlayExpanded) {
-          _startPosTimer();
-        } else {
-          _stopPosTimer();
-        }
-        _push();
-        break;
-      case 'sync':
-        _push();
-        break;
-    }
+    _command(msg['c']?.toString());
   }
 
-  // Selama kartu terbuka, kirim posisi asli tiap detik supaya progress tidak melenceng.
-  void _startPosTimer() {
-    _posTimer?.cancel();
-    _posTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_overlayOn || !_overlayExpanded) {
-        _stopPosTimer();
-        return;
-      }
-      _push();
-    });
-  }
-
-  void _stopPosTimer() {
-    _posTimer?.cancel();
-    _posTimer = null;
+  Future<void> _onIosCall(MethodCall call) async {
+    if (call.method != 'command') return;
+    final args = call.arguments;
+    final c = args is Map ? args['c']?.toString() : null;
+    _command(c);
   }
 }

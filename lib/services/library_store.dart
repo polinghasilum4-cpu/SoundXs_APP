@@ -10,7 +10,7 @@ class TopEntry {
   const TopEntry(this.track, this.plays);
 }
 
-/// Semua data lokal: lagu disukai, riwayat, hitungan putar, playlist tersimpan, pengaturan.
+/// Semua data lokal: lagu disukai, riwayat, hitungan putar, playlist tersimpan, unduhan offline, pengaturan.
 class LibraryStore extends ChangeNotifier {
   SharedPreferences? _prefs;
   Timer? _saveTimer;
@@ -18,9 +18,10 @@ class LibraryStore extends ChangeNotifier {
   List<Track> liked = [];
   List<Track> recent = [];
   List<Track> savedPlaylists = [];
-  List<Track> followedArtists = [];
   final Map<String, int> _plays = {};
   final Map<String, Track> _meta = {};
+  /// trackId -> path file lokal untuk offline
+  final Map<String, String> offlinePaths = {};
 
   // Pengaturan Dynamic Island
   bool islandOn = false;
@@ -36,7 +37,6 @@ class LibraryStore extends ChangeNotifier {
     liked = _readList(p.getString('lib_liked'));
     recent = _readList(p.getString('lib_recent'));
     savedPlaylists = _readList(p.getString('lib_saved_pl'));
-    followedArtists = _readList(p.getString('lib_followed'));
 
     try {
       final plays = jsonDecode(p.getString('lib_plays') ?? '{}');
@@ -47,6 +47,12 @@ class LibraryStore extends ChangeNotifier {
       if (meta is Map) {
         meta.forEach((k, v) {
           if (v is Map) _meta[k.toString()] = Track.fromJson(Map<String, dynamic>.from(v));
+        });
+      }
+      final off = jsonDecode(p.getString('lib_offline') ?? '{}');
+      if (off is Map) {
+        off.forEach((k, v) {
+          if (v is String && v.isNotEmpty) offlinePaths[k.toString()] = v;
         });
       }
     } catch (_) {}
@@ -93,18 +99,6 @@ class LibraryStore extends ChangeNotifier {
       savedPlaylists = savedPlaylists.where((e) => e.id != p.id).toList();
     } else {
       savedPlaylists = [p, ...savedPlaylists];
-    }
-    _changed();
-  }
-
-  // ───────────── Artis diikuti (lokal) ─────────────
-  bool isFollowing(String key) => followedArtists.any((a) => a.id == key);
-
-  void toggleFollowArtist(Track artist) {
-    if (isFollowing(artist.id)) {
-      followedArtists = followedArtists.where((e) => e.id != artist.id).toList();
-    } else {
-      followedArtists = [artist, ...followedArtists];
     }
     _changed();
   }
@@ -166,6 +160,31 @@ class LibraryStore extends ChangeNotifier {
     _changed();
   }
 
+  // ───────────── Offline / Unduhan ─────────────
+  bool isOffline(String id) => offlinePaths.containsKey(id);
+
+  String? offlinePath(String id) => offlinePaths[id];
+
+  void markOffline(Track t, String filePath) {
+    offlinePaths[t.id] = filePath;
+    _meta[t.id] = t;
+    _changed();
+  }
+
+  void removeOffline(String id) {
+    offlinePaths.remove(id);
+    _changed();
+  }
+
+  List<Track> get offlineTracks {
+    final list = <Track>[];
+    for (final id in offlinePaths.keys) {
+      final t = _meta[id];
+      if (t != null) list.add(t);
+    }
+    return list;
+  }
+
   // ───────────── Pengaturan ─────────────
   void setIsland({bool? on, String? style, bool? pop, int? offset}) {
     if (on != null) islandOn = on;
@@ -194,9 +213,9 @@ class LibraryStore extends ChangeNotifier {
     await p.setString('lib_liked', enc(liked));
     await p.setString('lib_recent', enc(recent));
     await p.setString('lib_saved_pl', enc(savedPlaylists));
-    await p.setString('lib_followed', enc(followedArtists));
     await p.setString('lib_plays', jsonEncode(_plays));
     await p.setString('lib_meta', jsonEncode(_meta.map((k, v) => MapEntry(k, v.toJson()))));
+    await p.setString('lib_offline', jsonEncode(offlinePaths));
     await p.setBool('island_on', islandOn);
     await p.setString('island_style', islandStyle);
     await p.setBool('island_pop', islandPop);

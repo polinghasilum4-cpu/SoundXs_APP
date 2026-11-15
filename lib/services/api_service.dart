@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/track.dart';
 
 class ApiException implements Exception {
@@ -10,6 +11,21 @@ class ApiException implements Exception {
   ApiException(this.message);
   @override
   String toString() => message;
+}
+
+/// Satu baris lirik. startMs/endMs dalam milidetik. startMs = -1 kalau lirik tidak tersinkron.
+class LyricLine {
+  final double startMs;
+  final double? endMs;
+  final String text;
+  const LyricLine({required this.startMs, this.endMs, required this.text});
+}
+
+class LyricsResult {
+  final List<LyricLine> lines;
+  final bool synced;
+  const LyricsResult(this.lines, this.synced);
+  bool get isEmpty => lines.isEmpty;
 }
 
 class _Cached {
@@ -26,7 +42,7 @@ class ApiService {
   factory ApiService() => _instance;
 
   static const _api = '/api';
-  static const _timeout = Duration(seconds: 30);
+  static const _timeout = Duration(seconds: 15);
   static const _ttl = Duration(minutes: 5);
 
   final http.Client _http = http.Client();
@@ -66,14 +82,30 @@ class ApiService {
     throw ApiException('Koneksi gagal.');
   }
 
+  static const _credKey = 'sc_client_id';
+  static const _credAtKey = 'sc_client_id_at';
+  static const _credTtlMs = 12 * 60 * 60 * 1000;
+
+  /// client_id disimpan di perangkat (12 jam). Cold start tidak perlu scrape ulang -> lebih cepat.
   Future<String> getCredentials({bool force = false}) async {
     if (_clientId != null && !force) return _clientId!;
+    final prefs = await SharedPreferences.getInstance();
+    if (!force) {
+      final saved = prefs.getString(_credKey);
+      final at = prefs.getInt(_credAtKey) ?? 0;
+      if (saved != null && saved.length >= 20 && DateTime.now().millisecondsSinceEpoch - at < _credTtlMs) {
+        _clientId = saved;
+        return saved;
+      }
+    }
     final data = await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/get-credentials'));
     final id = data is Map ? (data['client_id'] ?? data['clientId']) : null;
     if (id is! String || id.length < 20) {
       throw ApiException('Kredensial SoundCloud tidak tersedia');
     }
     _clientId = id;
+    await prefs.setString(_credKey, id);
+    await prefs.setInt(_credAtKey, DateTime.now().millisecondsSinceEpoch);
     return id;
   }
 
@@ -163,20 +195,32 @@ class ApiService {
     return null;
   }
 
-  /// Lirik dari /api/lyrics?title=&artist=&duration= -> teks per baris.
-  Future<String> getLyrics(Track t) async {
+  /// Lirik dari /api/lyrics. Kalau sumbernya LRCLIB, `synced` = true dan tiap baris punya waktu (detik).
+  Future<LyricsResult> getLyrics(Track t) async {
     final params = <String, String>{
       'title': t.title,
       'artist': t.artist,
       if (t.durationMs > 0) 'duration': (t.durationMs / 1000).round().toString(),
     };
     final data = await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params));
-    if (data is! Map || data['success'] != true) return '';
-    final lines = data['lines'];
-    if (lines is! List) return '';
-    return lines
-        .map((e) => e is Map ? (e['text'] ?? '').toString() : '')
-        .where((x) => x.isNotEmpty)
-        .join('\n');
+    if (data is! Map || data['success'] != true) return const LyricsResult([], false);
+    final raw = data['lines'];
+    if (raw is! List) return const LyricsResult([], false);
+    final wantSynced = data['synced'] == true;
+    final out = <LyricLine>[];
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final text = (e['text'] ?? '').toString().trim();
+      if (text.isEmpty) continue;
+      final tSec = e['t'];
+      final endSec = e['end'];
+      out.add(LyricLine(
+        startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
+        endMs: endSec is num ? endSec.toDouble() * 1000 : null,
+        text: text,
+      ));
+    }
+    final synced = wantSynced && out.isNotEmpty && out.every((l) => l.startMs >= 0);
+    return LyricsResult(out, synced);
   }
 }
