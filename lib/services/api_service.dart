@@ -322,7 +322,7 @@ class ApiService {
     final cached = await cachedLyrics(t.id);
     if (cached != null && cached.synced) return cached;
     final online = await _fetchLyricsOnline(t);
-    if (online.isNotEmpty) {
+    if (!online.isEmpty) {
       await _saveLyrics(t.id, online);
       return online;
     }
