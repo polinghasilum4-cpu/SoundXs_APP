@@ -96,10 +96,16 @@ class SoundXsAudioHandler extends BaseAudioHandler {
   PlaybackState _transformEvent(PlaybackEvent event) {
     return PlaybackState(
       controls: _controls(),
+      // Agar tombol play/pause/next/prev muncul di notifikasi, lock screen, dan panel media HP
       systemActions: const {
+        MediaAction.play,
+        MediaAction.pause,
+        MediaAction.stop,
         MediaAction.seek,
         MediaAction.seekForward,
         MediaAction.seekBackward,
+        MediaAction.skipToNext,
+        MediaAction.skipToPrevious,
       },
       androidCompactActionIndices: const [0, 1, 2],
       processingState: const {

@@ -194,34 +194,60 @@ class IslandService with WidgetsBindingObserver {
 
   // ───────────── Perintah kontrol (dari overlay Android & tombol iOS) ─────────────
   void _command(String? c) {
+    if (c == null || c.isEmpty) return;
     try {
       switch (c) {
         case 'toggle':
-          if (handler.player.playing) {
-            handler.pause();
+        case 'play':
+        case 'pause':
+          if (c == 'play') {
+            unawaited(handler.play());
+          } else if (c == 'pause') {
+            unawaited(handler.pause());
           } else {
-            handler.play();
+            if (handler.player.playing) {
+              unawaited(handler.pause());
+            } else {
+              unawaited(handler.play());
+            }
           }
           break;
         case 'next':
-          handler.skipToNext();
+          unawaited(handler.skipToNext());
           break;
         case 'prev':
-          handler.skipToPrevious();
+          unawaited(handler.skipToPrevious());
           break;
         case 'sync':
           break;
+        default:
+          debugPrint('IslandService unknown command: $c');
       }
     } catch (e) {
       debugPrint('IslandService command error ($c): $e');
     }
     // kirim status SEBENARNYA setelah perintah (overlay tidak menebak sendiri)
-    Future<void>.delayed(const Duration(milliseconds: 120), () => _push());
+    Future<void>.delayed(const Duration(milliseconds: 150), () => _push());
+    Future<void>.delayed(const Duration(milliseconds: 400), () => _push());
   }
 
   void _onOverlayMessage(dynamic msg) {
-    if (msg is! Map || msg['t'] != 'cmd') return;
-    _command(msg['c']?.toString());
+    // Terima Map atau bentuk lain dari shareData
+    if (msg is Map) {
+      final t = msg['t']?.toString();
+      if (t == 'cmd') {
+        _command(msg['c']?.toString());
+        return;
+      }
+      // Beberapa versi plugin hanya mengirim string perintah
+      if (msg['c'] != null) {
+        _command(msg['c']?.toString());
+      }
+      return;
+    }
+    if (msg is String && msg.isNotEmpty) {
+      _command(msg);
+    }
   }
 
   Future<void> _onIosCall(MethodCall call) async {
