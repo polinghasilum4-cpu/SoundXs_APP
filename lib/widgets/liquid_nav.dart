@@ -5,10 +5,10 @@ import '../theme/app_theme.dart';
 import 'liquid_glass.dart';
 
 const _kNavItems = <(IconData, IconData, String)>[
-  (Icons.home_rounded, Icons.home_outlined, 'Beranda'),
+  (Icons.home_rounded, Icons.home_rounded, 'Beranda'),
   (Icons.search_rounded, Icons.search_rounded, 'Cari'),
-  (Icons.library_music_rounded, Icons.library_music_outlined, 'Pustaka'),
-  (Icons.person_rounded, Icons.person_outline_rounded, 'Kamu'),
+  (Icons.library_music_rounded, Icons.library_music_rounded, 'Pustaka'),
+  (Icons.person_rounded, Icons.person_rounded, 'Kamu'),
 ];
 
 const double kNavHeight = 66;
