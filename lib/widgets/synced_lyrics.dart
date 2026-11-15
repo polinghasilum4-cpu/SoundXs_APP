@@ -4,9 +4,10 @@ import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 /// Lirik sinkron gaya Spotify:
-///  - baris aktif besar, putih, fill kiri → kanan sesuai progress baris
-///  - baris sekitar lebih besar dari sebelumnya, pudar
-///  - scroll mengikuti baris aktif
+///  - rata kiri, teks besar
+///  - baris aktif putih + fill kiri→kanan mengikuti progress audio
+///  - baris lain pudar
+///  - auto-scroll mengikuti baris aktif
 ///  - ketuk baris untuk seek
 class SyncedLyrics extends StatefulWidget {
   const SyncedLyrics({
@@ -30,9 +31,10 @@ class SyncedLyrics extends StatefulWidget {
 
 class _SyncedLyricsState extends State<SyncedLyrics> {
   final _scroll = ScrollController();
-  late final List<GlobalKey> _keys = List.generate(widget.lines.length, (_) => GlobalKey());
+  late final List<GlobalKey> _keys =
+      List.generate(widget.lines.length, (_) => GlobalKey());
   int _active = -1;
-  double _lineProgress = 0; // 0..1 fill kiri→kanan baris aktif
+  double _lineProgress = 0;
   StreamSubscription<Duration>? _sub;
   Timer? _resume;
   bool _userDragging = false;
@@ -47,6 +49,16 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _active >= 0) _follow(_active, instant: true);
       });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SyncedLyrics old) {
+    super.didUpdateWidget(old);
+    if (old.lines.length != widget.lines.length) {
+      _keys
+        ..clear()
+        ..addAll(List.generate(widget.lines.length, (_) => GlobalKey()));
     }
   }
 
@@ -74,7 +86,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     }
     if (ans >= 0) {
       final end = widget.lines[ans].endMs;
-      if (end != null && ms > end + 1500) return -1;
+      if (end != null && ms > end + 2000) return -1;
     }
     return ans;
   }
@@ -101,8 +113,8 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     final i = _indexAt(ms);
     final prog = _progressAt(ms, i);
     final lineChanged = i != _active;
-    // Update progress sering untuk animasi fill; setState ringan
-    if (lineChanged || (i >= 0 && (prog - _lineProgress).abs() > 0.02)) {
+    // Update sering agar animasi fill halus
+    if (lineChanged || (i >= 0 && (prog - _lineProgress).abs() > 0.015)) {
       setState(() {
         _active = i;
         _lineProgress = prog;
@@ -117,9 +129,9 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     if (ctx == null) return;
     Scrollable.ensureVisible(
       ctx,
-      alignment: 0.45,
-      duration: instant ? Duration.zero : const Duration(milliseconds: 650),
-      curve: Curves.easeInOutCubic,
+      alignment: 0.35,
+      duration: instant ? Duration.zero : const Duration(milliseconds: 480),
+      curve: Curves.easeOutCubic,
     );
   }
 
@@ -129,7 +141,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
       _resume?.cancel();
     } else if (n is ScrollEndNotification && _userDragging) {
       _resume?.cancel();
-      _resume = Timer(const Duration(milliseconds: 2500), () {
+      _resume = Timer(const Duration(milliseconds: 2200), () {
         if (!mounted) return;
         _userDragging = false;
         _follow(_active);
@@ -141,26 +153,45 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
   @override
   Widget build(BuildContext context) {
     if (widget.lines.isEmpty) {
-      return const Center(child: Text('Lirik tidak tersedia', style: TextStyle(color: C.dim)));
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 32),
+          child: Text(
+            'Lirik tidak tersedia untuk lagu ini.\nCoba lagu dengan judul yang lebih jelas.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: C.dim, height: 1.4),
+          ),
+        ),
+      );
     }
     return LayoutBuilder(
       builder: (context, c) {
-        final pad = c.maxHeight * 0.38;
+        final topPad = c.maxHeight * 0.28;
+        final bottomPad = c.maxHeight * 0.42;
         return ShaderMask(
           shaderCallback: (r) => const LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Colors.transparent, Colors.white, Colors.white, Colors.transparent],
-            stops: [0.0, 0.12, 0.88, 1.0],
+            colors: [
+              Colors.transparent,
+              Colors.white,
+              Colors.white,
+              Colors.transparent,
+            ],
+            stops: [0.0, 0.10, 0.82, 1.0],
           ).createShader(r),
           blendMode: BlendMode.dstIn,
           child: NotificationListener<ScrollNotification>(
             onNotification: _onScroll,
             child: SingleChildScrollView(
               controller: _scroll,
-              padding: EdgeInsets.symmetric(vertical: pad, horizontal: 8),
+              physics: const BouncingScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(20, topPad, 28, bottomPad),
               child: Column(
-                children: [for (var i = 0; i < widget.lines.length; i++) _line(i)],
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < widget.lines.length; i++) _line(i),
+                ],
               ),
             ),
           ),
@@ -173,19 +204,21 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     final l = widget.lines[i];
     final isActive = widget.synced && i == _active;
 
+    // Mode non-synced: semua putih besar, rata kiri
     if (!widget.synced) {
       return KeyedSubtree(
         key: _keys[i],
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: const EdgeInsets.only(bottom: 18),
           child: Text(
             l.text,
-            textAlign: TextAlign.center,
+            textAlign: TextAlign.left,
             style: const TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.w700,
               color: Colors.white,
-              height: 1.4,
+              height: 1.35,
+              letterSpacing: -0.3,
             ),
           ),
         ),
@@ -194,39 +227,30 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
 
     final d = _active < 0 ? 99 : (i - _active).abs();
     final double size;
-    final Color dimColor;
+    final Color color;
     final FontWeight weight;
-    // Ukuran lebih besar + putih tegas (mirip Spotify)
+
     if (d == 0) {
-      size = 34;
-      dimColor = const Color(0x66FFFFFF);
-      weight = FontWeight.w900;
+      size = 32;
+      color = Colors.white;
+      weight = FontWeight.w800;
     } else if (d == 1) {
-      size = 26;
-      dimColor = const Color(0xBBFFFFFF);
-      weight = FontWeight.w700;
+      size = 24;
+      color = const Color(0x99FFFFFF);
+      weight = FontWeight.w600;
     } else if (d == 2) {
       size = 22;
-      dimColor = const Color(0x77FFFFFF);
+      color = const Color(0x55FFFFFF);
       weight = FontWeight.w600;
     } else {
       size = 20;
-      dimColor = const Color(0x44FFFFFF);
-      weight = FontWeight.w600;
+      color = const Color(0x33FFFFFF);
+      weight = FontWeight.w500;
     }
 
-    final baseStyle = TextStyle(
-      fontSize: size,
-      fontWeight: weight,
-      color: dimColor,
-      height: 1.35,
-    );
-    final fillStyle = TextStyle(
-      fontSize: size,
-      fontWeight: weight,
-      color: Colors.white,
-      height: 1.35,
-    );
+    // Baris yang sudah lewat sedikit lebih pudar
+    final past = _active >= 0 && i < _active;
+    final baseColor = past ? const Color(0x44FFFFFF) : color;
 
     return KeyedSubtree(
       key: _keys[i],
@@ -234,46 +258,51 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
         behavior: HitTestBehavior.opaque,
         onTap: () => widget.onSeek(Duration(milliseconds: l.startMs.round())),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 13),
-          child: isActive
-              ? _KaraokeLine(
-                  text: l.text,
-                  progress: _lineProgress,
-                  baseStyle: baseStyle,
-                  fillStyle: fillStyle,
-                )
-              : AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeOutCubic,
-                  style: baseStyle,
-                  textAlign: TextAlign.center,
-                  child: Text(l.text, textAlign: TextAlign.center),
-                ),
+          padding: const EdgeInsets.only(bottom: 16),
+          child: AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOutCubic,
+            style: TextStyle(
+              fontSize: size,
+              fontWeight: weight,
+              color: baseColor,
+              height: 1.3,
+              letterSpacing: -0.35,
+            ),
+            child: isActive
+                ? _KaraokeFill(
+                    text: l.text,
+                    progress: _lineProgress,
+                    size: size,
+                    weight: weight,
+                  )
+                : Text(l.text, textAlign: TextAlign.left),
+          ),
         ),
       ),
     );
   }
 }
 
-/// Fill putih kiri → kanan (mirip Spotify karaoke) lewat gradient mask.
-class _KaraokeLine extends StatelessWidget {
-  const _KaraokeLine({
+/// Fill putih kiri → kanan mengikuti progress baris (karaoke Spotify).
+class _KaraokeFill extends StatelessWidget {
+  const _KaraokeFill({
     required this.text,
     required this.progress,
-    required this.baseStyle,
-    required this.fillStyle,
+    required this.size,
+    required this.weight,
   });
 
   final String text;
   final double progress;
-  final TextStyle baseStyle;
-  final TextStyle fillStyle;
+  final double size;
+  final FontWeight weight;
 
   @override
   Widget build(BuildContext context) {
     final p = progress.clamp(0.0, 1.0);
-    // Fill putih kiri → kanan (karaoke Spotify): bagian terisi putih penuh, sisa abu
-    final soft = (p + 0.06).clamp(0.0, 1.0);
+    final soft = (p + 0.05).clamp(0.0, 1.0);
+
     return ShaderMask(
       blendMode: BlendMode.srcIn,
       shaderCallback: (bounds) {
@@ -283,18 +312,21 @@ class _KaraokeLine extends StatelessWidget {
           colors: const [
             Colors.white,
             Colors.white,
-            Color(0x88FFFFFF),
-            Color(0x55FFFFFF),
+            Color(0x66FFFFFF),
+            Color(0x44FFFFFF),
           ],
           stops: [0.0, p.clamp(0.0, 0.999), soft, 1.0],
         ).createShader(bounds);
       },
       child: Text(
         text,
-        textAlign: TextAlign.center,
-        style: fillStyle.copyWith(
+        textAlign: TextAlign.left,
+        style: TextStyle(
+          fontSize: size,
+          fontWeight: weight,
           color: Colors.white,
-          fontWeight: FontWeight.w900,
+          height: 1.3,
+          letterSpacing: -0.35,
         ),
       ),
     );
