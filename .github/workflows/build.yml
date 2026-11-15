@@ -1,12 +1,18 @@
 name: Build APK
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,13 +27,20 @@ jobs:
           cache: true
 
       - name: Generate Android scaffolding (keep our own files)
+        shell: bash
         run: |
-          flutter create --org com.soundxs --project-name soundxs_app /tmp/scaffold
+          set -euo pipefail
+          rm -rf /tmp/scaffold
+          flutter create --platforms=android --org com.soundxs --project-name soundxs_app /tmp/scaffold
+          # kode Kotlin dari scaffold dibuang, MainActivity kita yang dipakai
           rm -rf /tmp/scaffold/android/app/src/main/kotlin
+          # cp -n: file yang sudah ada (manifest, res, MainActivity) tidak ditimpa
           cp -rn /tmp/scaffold/android/. android/
 
       - name: Set applicationId and minSdk
+        shell: bash
         run: |
+          set -euo pipefail
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] || continue
             sed -i -E 's/com\.soundxs\.[a-z_]+/com.soundxs.app/g' "$f"
@@ -36,9 +49,11 @@ jobs:
           grep -nE "minSdk|applicationId|namespace" android/app/build.gradle* || true
 
       - run: flutter pub get
+
       - run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
           name: SoundXs-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
