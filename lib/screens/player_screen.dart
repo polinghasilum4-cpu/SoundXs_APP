@@ -615,7 +615,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final segs = _pickAllSegmentsFromM3u8(playlistBody, finalPlaylistUrl);
         if (segs.isEmpty && initUri == null) {
           // Coba nested media playlist
-          final nested = _pickMediaFromM3u8(playlistBody, base);
+          final nested = _pickMediaFromM3u8(playlistBody, finalPlaylistUrl);
           if (nested == null) throw Exception('Playlist HLS kosong');
           final nestedResp = await get(nested, sec: 60);
           if (nestedResp.statusCode < 200 || nestedResp.statusCode >= 400) {
