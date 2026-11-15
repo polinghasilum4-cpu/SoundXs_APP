@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -45,7 +46,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   _PlayerView _view = _PlayerView.cover;
   String _lyricsId = '';
   Future<LyricsResult>? _lyrics;
-  bool _downloading = false;
+  String? _dlId; // id lagu yang sedang diunduh (per-lagu, bukan bool global)
 
   @override
   void initState() {
@@ -536,9 +537,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 _actionBtn(Icons.queue_music_rounded, 'Antrian', _showQueue),
                 _actionBtn(
                   offline ? Icons.download_done_rounded : Icons.download_rounded,
-                  offline ? 'Tersimpan' : (_downloading ? 'Mengunduh…' : 'Unduh'),
-                  offline || _downloading ? null : () => _downloadOffline(t),
-                  active: offline || _downloading,
+                  offline ? 'Tersimpan' : (_dlId == t.id ? 'Mengunduh…' : 'Unduh'),
+                  offline || _dlId == t.id ? null : () => _downloadOffline(t),
+                  active: offline || _dlId == t.id,
                 ),
                 _actionBtn(Icons.share_rounded, 'Bagikan', () => _copyLink(t)),
                 _actionBtn(Icons.bedtime_rounded, until == null ? 'Tidur' : 'Aktif', _showSleep,
@@ -559,8 +560,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _downloadOffline(Track t) async {
-    if (_downloading || store.isOffline(t.id)) return;
-    setState(() => _downloading = true);
+    if (_dlId != null || store.isOffline(t.id)) return;
+    setState(() => _dlId = t.id);
     try {
       Track src = t;
       try {
@@ -643,6 +644,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
 
       store.markOffline(src, file.path);
+      // simpan lirik ke disk juga, supaya lirik bisa dibaca saat offline
+      unawaited(_api.getLyrics(src).catchError((_) => const LyricsResult([], false)));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -662,7 +665,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _downloading = false);
+      if (mounted) setState(() => _dlId = null);
     }
   }
 
