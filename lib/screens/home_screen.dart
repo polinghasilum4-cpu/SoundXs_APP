@@ -91,24 +91,40 @@ class _HomeScreenState extends State<HomeScreen> {
       _tracks = cached;
     });
     try {
-      final res = await _api.search(MOOD_QUERY[mood]!).timeout(
-        const Duration(seconds: 20),
-        onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
-      );
+      // Timeout longgar + retry; cold start sering gagal karena client_id belum siap
+      Future<List<Track>> once() => _api.search(MOOD_QUERY[mood]!).timeout(
+            const Duration(seconds: 40),
+            onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
+          );
+      List<Track> res;
+      try {
+        res = await once();
+      } catch (_) {
+        // Paksa refresh kredensial SoundCloud lalu coba lagi
+        try {
+          await _api.getCredentials(force: true);
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        if (!mounted || id != _req) return;
+        res = await once();
+      }
       if (!mounted || id != _req) return;
       final list = res.where((e) => e.kind == ItemKind.track).toList();
-      _writeCache(mood, list);
+      if (list.isNotEmpty) _writeCache(mood, list);
       setState(() {
-        _tracks = list;
+        if (list.isNotEmpty) _tracks = list;
         _loading = false;
-        _stale = false;
+        _stale = list.isEmpty && _tracks.isNotEmpty;
+        if (list.isEmpty && _tracks.isEmpty) {
+          _error = 'Tidak ada lagu ditemukan.';
+        }
       });
     } catch (e) {
       if (!mounted || id != _req) return;
       setState(() {
         _loading = false;
         if (_tracks.isEmpty) {
-          _error = e.toString();
+          _error = e.toString().replaceFirst('Exception: ', '').replaceFirst('ApiException: ', '');
         } else {
           _stale = true;
         }
