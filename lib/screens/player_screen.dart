@@ -562,7 +562,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_downloading || store.isOffline(t.id)) return;
     setState(() => _downloading = true);
     try {
-      // Refresh stream (SoundCloud URL cepat kedaluwarsa)
       Track src = t;
       try {
         final fresh = await _api.refresh(t);
@@ -579,106 +578,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
         'Accept': '*/*',
       };
 
-      // 1) Coba unduh langsung lewat proxy (ikuti redirect ke CDN)
-      final resp = await http
-          .get(Uri.parse(proxyUrl), headers: headers)
-          .timeout(const Duration(seconds: 90));
+      Future<http.Response> get(String url, {int sec = 45}) => http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(Duration(seconds: sec));
 
+      final resp = await get(proxyUrl, sec: 60);
       if (resp.statusCode < 200 || resp.statusCode >= 400) {
         throw Exception('Server stream error (${resp.statusCode})');
       }
 
       final ctype = (resp.headers['content-type'] ?? '').toLowerCase();
-      var bytes = resp.bodyBytes;
-      final head = bytes.length > 12
-          ? String.fromCharCodes(bytes.take(12))
-          : String.fromCharCodes(bytes);
+      final head = resp.bodyBytes.length > 16
+          ? String.fromCharCodes(resp.bodyBytes.take(16))
+          : String.fromCharCodes(resp.bodyBytes);
       final isM3u = head.trimLeft().startsWith('#EXT') ||
           ctype.contains('mpegurl') ||
           ctype.contains('x-mpegurl');
 
-      if (isM3u) {
-        // 2) Playlist: ambil URL media / segmen
-        final body = resp.body;
-        final mediaUrl = _pickMediaFromM3u8(body, proxyUrl);
-        if (mediaUrl == null) {
-          throw Exception('Tidak ada media di playlist');
-        }
+      late Uint8List bytes;
+      var outExt = 'm4a';
 
-        var mediaResp = await http
-            .get(Uri.parse(mediaUrl), headers: headers)
-            .timeout(const Duration(seconds: 90));
+      if (!isM3u) {
+        // Progressive (mp3/dll)
+        bytes = resp.bodyBytes;
+        if (ctype.contains('mpeg') || ctype.contains('mp3')) outExt = 'mp3';
+      } else {
+        // HLS SoundCloud: #EXT-X-MAP init.mp4 + dataXXX.m4s
+        final playlistBody = resp.body;
+        // URL final playlist (setelah redirect) dipakai resolve relatif — proxy sudah absolute
+        final base = proxyUrl;
 
-        var mediaCtype = (mediaResp.headers['content-type'] ?? '').toLowerCase();
-        var mediaBytes = mediaResp.bodyBytes;
-        var mediaHead = mediaBytes.length > 12
-            ? String.fromCharCodes(mediaBytes.take(12))
-            : String.fromCharCodes(mediaBytes);
-
-        // Nested playlist sekali lagi
-        if (mediaHead.trimLeft().startsWith('#EXT') || mediaCtype.contains('mpegurl')) {
-          final nested = _pickMediaFromM3u8(mediaResp.body, mediaUrl);
-          if (nested != null && !nested.toLowerCase().contains('.m3u8')) {
-            mediaResp = await http
-                .get(Uri.parse(nested), headers: headers)
-                .timeout(const Duration(seconds: 90));
-            mediaCtype = (mediaResp.headers['content-type'] ?? '').toLowerCase();
-            mediaBytes = mediaResp.bodyBytes;
-            mediaHead = mediaBytes.length > 12
-                ? String.fromCharCodes(mediaBytes.take(12))
-                : String.fromCharCodes(mediaBytes);
-          }
-        }
-
-        // Masih playlist → gabung segmen (batas 120 segmen agar tidak menggantung)
-        if (mediaHead.trimLeft().startsWith('#EXT') || mediaCtype.contains('mpegurl')) {
-          final segs = _pickAllSegmentsFromM3u8(mediaResp.body, mediaUrl);
-          if (segs.isEmpty) {
-            throw Exception('HLS tanpa segmen audio');
-          }
-          final take = segs.length > 120 ? segs.sublist(0, 120) : segs;
-          final buf = BytesBuilder(copy: false);
-          for (final seg in take) {
-            try {
-              final r = await http
-                  .get(Uri.parse(seg), headers: headers)
-                  .timeout(const Duration(seconds: 25));
-              if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
-                buf.add(r.bodyBytes);
-              }
-            } catch (_) {}
-          }
-          bytes = buf.toBytes();
+        final initUri = _pickMapUri(playlistBody);
+        final segs = _pickAllSegmentsFromM3u8(playlistBody, base);
+        if (segs.isEmpty && initUri == null) {
+          // Coba nested media playlist
+          final nested = _pickMediaFromM3u8(playlistBody, base);
+          if (nested == null) throw Exception('Playlist HLS kosong');
+          final nestedResp = await get(nested, sec: 60);
+          final body2 = nestedResp.body;
+          final init2 = _pickMapUri(body2);
+          final segs2 = _pickAllSegmentsFromM3u8(body2, nested);
+          if (segs2.isEmpty) throw Exception('Tidak ada segmen audio');
+          bytes = await _downloadHlsParts(get, init2, segs2);
         } else {
-          bytes = mediaBytes;
+          bytes = await _downloadHlsParts(get, initUri, segs);
         }
+        outExt = 'm4a';
       }
 
-      if (bytes.length < 40 * 1024) {
+      if (bytes.length < 30 * 1024) {
         throw Exception(
-            'File terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB). Stream mungkin HLS penuh.');
+            'File terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
       }
 
-      final ext = ctype.contains('mpeg') || ctype.contains('mp3')
-          ? 'mp3'
-          : (ctype.contains('mp4') || ctype.contains('m4a') || ctype.contains('aac'))
-              ? 'm4a'
-              : 'audio';
-
-      // Simpan permanen di folder app (bukan cache yang bisa dihapus sistem)
       final docs = await getApplicationDocumentsDirectory();
       final dir = Directory('${docs.path}/soundxs_offline');
       if (!await dir.exists()) await dir.create(recursive: true);
       final safeId = t.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final file = File('${dir.path}/$safeId.$ext');
-      final data = bytes is Uint8List ? bytes as Uint8List : Uint8List.fromList(bytes);
-      await file.writeAsBytes(data, flush: true);
+      final file = File('${dir.path}/$safeId.$outExt');
+      await file.writeAsBytes(bytes, flush: true);
 
-      if (!await file.exists() || await file.length() < 40 * 1024) {
+      if (!await file.exists() || await file.length() < 30 * 1024) {
         throw Exception('Gagal menyimpan file ke disk');
       }
 
-      // Path file + metadata track disimpan di SharedPreferences (mirip localStorage)
       store.markOffline(src, file.path);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -703,7 +666,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  /// Ambil URL media dari isi m3u8 (prefer non-playlist).
+  /// Unduh init (EXT-X-MAP) + semua segmen, gabung jadi satu file fMP4.
+  Future<Uint8List> _downloadHlsParts(
+    Future<http.Response> Function(String url, {int sec}) get,
+    String? initUri,
+    List<String> segs,
+  ) async {
+    // Batasi lagu sangat panjang agar tidak menggantung (≈15 menit @10s/segmen)
+    final take = segs.length > 90 ? segs.sublist(0, 90) : segs;
+    final buf = BytesBuilder(copy: false);
+
+    if (initUri != null && initUri.isNotEmpty) {
+      final r = await get(initUri, sec: 40);
+      if (r.statusCode >= 200 && r.statusCode < 400) {
+        buf.add(r.bodyBytes);
+      }
+    }
+
+    var ok = 0;
+    for (final seg in take) {
+      try {
+        final r = await get(seg, sec: 30);
+        if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
+          buf.add(r.bodyBytes);
+          ok++;
+        }
+      } catch (_) {}
+    }
+    if (ok == 0) throw Exception('Gagal mengunduh segmen audio');
+    return buf.toBytes();
+  }
+
+  /// URI dari #EXT-X-MAP:URI="..."
+  String? _pickMapUri(String body) {
+    final m = RegExp(r'#EXT-X-MAP:.*?URI="([^"]+)"').firstMatch(body);
+    return m?.group(1);
+  }
+
   String? _pickMediaFromM3u8(String body, String baseUrl) {
     final lines = body.split(RegExp(r'\r?\n'));
     final candidates = <String>[];
@@ -722,7 +721,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return candidates.last;
   }
 
-  /// Semua URL segmen dari media playlist.
   List<String> _pickAllSegmentsFromM3u8(String body, String baseUrl) {
     final lines = body.split(RegExp(r'\r?\n'));
     final out = <String>[];
