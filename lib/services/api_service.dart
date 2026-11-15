@@ -209,8 +209,10 @@ class ApiService {
       ' ',
     );
     s = s.replaceAll(RegExp(r'\b20[0-3][0-9]\b'), ' ');
-    final dashParts = s.split(RegExp(r'\s[-\u2013\u2014]\s'));
-    if (dashParts.length > 1 && dashParts.first.trim().length >= 2) s = dashParts.first;
+    if (s.contains(' - ')) {
+      final parts = s.split(' - ');
+      if (parts.first.trim().length >= 2) s = parts.first;
+    }
     s = s.replaceAll(RegExp(r'[|_~•·]+'), ' ');
     s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
     return s;
@@ -223,125 +225,8 @@ class ApiService {
     return s;
   }
 
-  static const _lyrKeyPrefix = 'lyr_';
-
-  String _encodeLyrics(LyricsResult r) => jsonEncode({
-        'synced': r.synced,
-        'lines': r.lines
-            .map((l) => {'s': l.startMs, 'e': l.endMs, 't': l.text})
-            .toList(),
-      });
-
-  LyricsResult? _decodeLyrics(String? raw) {
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      final m = jsonDecode(raw) as Map;
-      final list = (m['lines'] as List)
-          .map((e) => LyricLine(
-                startMs: (e['s'] as num).toDouble(),
-                endMs: e['e'] is num ? (e['e'] as num).toDouble() : null,
-                text: e['t'].toString(),
-              ))
-          .toList();
-      if (list.isEmpty) return null;
-      return LyricsResult(list, m['synced'] == true);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Lirik dibaca dari cache disk dulu (bisa dipakai offline).
-  Future<LyricsResult?> cachedLyrics(String trackId) async {
-    final prefs = await SharedPreferences.getInstance();
-    return _decodeLyrics(prefs.getString('$_lyrKeyPrefix$trackId'));
-  }
-
-  Future<void> _saveLyrics(String trackId, LyricsResult r) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('$_lyrKeyPrefix$trackId', _encodeLyrics(r));
-  }
-
-  /// Parser format LRC: [mm:ss.xx] teks. Dipakai untuk fallback langsung ke LRCLIB.
-  static LyricsResult _parseLrc(String lrc) {
-    final re = RegExp(r'\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]');
-    final out = <LyricLine>[];
-    for (final raw in lrc.split(RegExp(r'\r?\n'))) {
-      final matches = re.allMatches(raw).toList();
-      if (matches.isEmpty) continue;
-      final text = raw.substring(matches.last.end).trim();
-      if (text.isEmpty) continue;
-      for (final m in matches) {
-        final min = int.parse(m.group(1)!);
-        final sec = int.parse(m.group(2)!);
-        final frac = m.group(3) ?? '0';
-        final ms = (min * 60 + sec) * 1000 +
-            (int.parse(frac.padRight(3, '0').substring(0, 3)));
-        out.add(LyricLine(startMs: ms.toDouble(), text: text));
-      }
-    }
-    out.sort((a, b) => a.startMs.compareTo(b.startMs));
-    final synced = out.isNotEmpty;
-    return LyricsResult(out, synced);
-  }
-
-  Future<LyricsResult?> _lrclibDirect(String title, String artist, int? durationSec) async {
-    final params = <String, String>{
-      'track_name': title,
-      'artist_name': artist,
-      if (durationSec != null) 'duration': durationSec.toString(),
-    };
-    final uri = Uri.https('lrclib.net', '/api/get', params);
-    try {
-      final res = await _http
-          .get(uri, headers: {'Accept': 'application/json', 'User-Agent': 'SoundXs/1.1'})
-          .timeout(_timeout);
-      if (res.statusCode != 200) return null;
-      final data = jsonDecode(utf8.decode(res.bodyBytes));
-      if (data is! Map) return null;
-      final synced = data['syncedLyrics'];
-      if (synced is String && synced.trim().isNotEmpty) {
-        final r = _parseLrc(synced);
-        if (r.lines.isNotEmpty) return r;
-      }
-      final plain = data['plainLyrics'];
-      if (plain is String && plain.trim().isNotEmpty) {
-        final lines = plain
-            .split(RegExp(r'\r?\n'))
-            .map((x) => x.trim())
-            .where((x) => x.isNotEmpty)
-            .map((x) => LyricLine(startMs: -1, text: x))
-            .toList();
-        if (lines.isNotEmpty) return LyricsResult(lines, false);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  /// Lirik: cache disk -> server /api/lyrics -> LRCLIB langsung. Hasil sukses disimpan ke disk.
+  /// Lirik dari /api/lyrics (LRCLIB). Coba beberapa variasi judul/artis.
   Future<LyricsResult> getLyrics(Track t) async {
-    final cached = await cachedLyrics(t.id);
-    if (cached != null && cached.synced) return cached;
-    final online = await _fetchLyricsOnline(t);
-    if (!online.isEmpty) {
-      await _saveLyrics(t.id, online);
-      return online;
-    }
-    final title = cleanTitle(t.title);
-    final artist = cleanArtist(t.artist);
-    final direct = await _lrclibDirect(
-      title.isNotEmpty ? title : t.title,
-      artist,
-      t.durationMs > 0 ? (t.durationMs / 1000).round() : null,
-    );
-    if (direct != null && !direct.isEmpty) {
-      await _saveLyrics(t.id, direct);
-      return direct;
-    }
-    return cached ?? const LyricsResult([], false);
-  }
-
-  /// Lirik dari /api/lyrics (LRCLIB via server). Coba beberapa variasi judul/artis.
-  Future<LyricsResult> _fetchLyricsOnline(Track t) async {
     final title0 = cleanTitle(t.title);
     final artist0 = cleanArtist(t.artist);
     final duration = t.durationMs > 0 ? (t.durationMs / 1000).round().toString() : null;
@@ -391,6 +276,68 @@ class ApiService {
         best ??= result;
       } catch (_) {}
     }
-    return best ?? const LyricsResult([], false);
+    if (best != null) return best;
+
+    // Fallback langsung ke LRCLIB. Endpoint backend lama kadang belum
+    // meneruskan /api/lyrics, sehingga player selalu menampilkan keadaan kosong.
+    try {
+      final uri = Uri.https('lrclib.net', '/api/search', {
+        'track_name': title0.isNotEmpty ? title0 : t.title,
+        if (artist0.isNotEmpty) 'artist_name': artist0,
+        if (duration != null) 'duration': duration,
+      });
+      final response = await _http.get(uri, headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'SoundXs/1.1 (Android; lyrics lookup)',
+      }).timeout(const Duration(seconds: 12));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        if (decoded is List) {
+          // Pilih kecocokan judul/artis terdekat, bukan hasil acak pertama.
+          final wantedTitle = title0.toLowerCase();
+          final wantedArtist = artist0.toLowerCase();
+          final candidates = decoded.whereType<Map>().toList()
+            ..sort((a, b) {
+              int score(Map item) {
+                final title = (item['trackName'] ?? '').toString().toLowerCase();
+                final artist = (item['artistName'] ?? '').toString().toLowerCase();
+                return (title == wantedTitle ? 4 : title.contains(wantedTitle) || wantedTitle.contains(title) ? 2 : 0) +
+                    (wantedArtist.isNotEmpty && artist == wantedArtist ? 3 : 0) +
+                    (item['syncedLyrics'] is String && (item['syncedLyrics'] as String).isNotEmpty ? 1 : 0);
+              }
+              return score(b).compareTo(score(a));
+            });
+          for (final item in candidates) {
+            final syncedRaw = item['syncedLyrics'];
+            final plainRaw = item['plainLyrics'];
+            final rawLyrics = syncedRaw is String && syncedRaw.trim().isNotEmpty
+                ? syncedRaw
+                : (plainRaw is String ? plainRaw : '');
+            if (rawLyrics.trim().isEmpty) continue;
+            final lines = <LyricLine>[];
+            final lrcPattern = RegExp(r'^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$');
+            for (final rawLine in rawLyrics.split(RegExp(r'\r?\n'))) {
+              final match = lrcPattern.firstMatch(rawLine.trim());
+              if (match != null) {
+                final fraction = (match.group(3) ?? '0').padRight(3, '0').substring(0, 3);
+                final ms = (int.parse(match.group(1)!) * 60 + int.parse(match.group(2)!)) * 1000 + int.parse(fraction);
+                final text = (match.group(4) ?? '').trim();
+                if (text.isNotEmpty) lines.add(LyricLine(startMs: ms.toDouble(), text: text));
+              } else if (syncedRaw is! String || syncedRaw.trim().isEmpty) {
+                final text = rawLine.trim();
+                if (text.isNotEmpty) lines.add(LyricLine(startMs: -1, text: text));
+              }
+            }
+            if (lines.isNotEmpty) {
+              lines.sort((a, b) => a.startMs.compareTo(b.startMs));
+              return LyricsResult(lines, lines.every((line) => line.startMs >= 0));
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Jaga player tetap hidup bila layanan lirik pihak ketiga tidak tersedia.
+    }
+    return const LyricsResult([], false);
   }
 }
