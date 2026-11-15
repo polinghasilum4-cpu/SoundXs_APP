@@ -29,9 +29,9 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.soundxs.app.channel.audio',
       androidNotificationChannelName: 'SoundXs Playback',
+      // audio_service mewajibkan: ongoing hanya valid jika stopForegroundOnPause = true
       androidNotificationOngoing: true,
-      // tetap foreground saat pause: tombol notifikasi & island tidak hilang setelah jeda
-      androidStopForegroundOnPause: false,
+      androidStopForegroundOnPause: true,
     ),
   );
   audioHandler.onTrackStarted = store.recordPlay;
