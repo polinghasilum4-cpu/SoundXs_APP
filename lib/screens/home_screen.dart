@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:math' as math;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import '../globals.dart';
 import '../models/track.dart';
@@ -40,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Track> _tracks = [];
   bool _loading = true;
   String? _error;
+  bool _stale = false;
   int _req = 0;
 
   @override
@@ -48,25 +51,67 @@ class _HomeScreenState extends State<HomeScreen> {
     _load(_mood);
   }
 
+  static const _cachePrefix = 'home_cache_';
+
+  Future<List<Track>> _readCache(String mood) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final raw = p.getString('$_cachePrefix$mood');
+      if (raw == null) return [];
+      final l = jsonDecode(raw);
+      if (l is! List) return [];
+      return l
+          .whereType<Map>()
+          .map((e) => Track.fromJson(Map<String, dynamic>.from(e)))
+          .where((t) => t.id.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _writeCache(String mood, List<Track> list) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('$_cachePrefix$mood', jsonEncode(list.take(20).map((e) => e.toJson()).toList()));
+    } catch (_) {}
+  }
+
+  /// Lagu terakhir langsung tampil (tidak nunggu jaringan). Data baru menggantikan setelah sukses.
+  /// Kalau gagal dan belum ada cache -> pesan error + Coba lagi.
   Future<void> _load(String mood) async {
     final id = ++_req;
+    final cached = await _readCache(mood);
+    if (!mounted || id != _req) return;
     setState(() {
       _mood = mood;
-      _loading = true;
+      _loading = cached.isEmpty;
       _error = null;
+      _stale = false;
+      _tracks = cached;
     });
     try {
-      final res = await _api.search(MOOD_QUERY[mood]!);
+      final res = await _api.search(MOOD_QUERY[mood]!).timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
+      );
       if (!mounted || id != _req) return;
+      final list = res.where((e) => e.kind == ItemKind.track).toList();
+      _writeCache(mood, list);
       setState(() {
-        _tracks = res.where((e) => e.kind == ItemKind.track).toList();
+        _tracks = list;
         _loading = false;
+        _stale = false;
       });
     } catch (e) {
       if (!mounted || id != _req) return;
       setState(() {
-        _error = e.toString();
         _loading = false;
+        if (_tracks.isEmpty) {
+          _error = e.toString();
+        } else {
+          _stale = true;
+        }
       });
     }
   }
@@ -97,6 +142,13 @@ class _HomeScreenState extends State<HomeScreen> {
           slivers: [
             SliverToBoxAdapter(child: _header()),
             SliverToBoxAdapter(child: _chips()),
+            if (_stale)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
+                  child: Text('Server lambat. Menampilkan lagu terakhir.', style: TextStyle(color: C.dim, fontSize: 12)),
+                ),
+              ),
             if (_loading) const SliverToBoxAdapter(child: Padding(padding: EdgeInsets.only(top: 18), child: ShimmerList())),
             if (!_loading && _tracks.isEmpty)
               SliverToBoxAdapter(
@@ -153,7 +205,7 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             tooltip: 'Pengaturan',
             onPressed: () => _open(const ProfileScreen()),
-            icon: const Icon(Icons.settings_outlined, color: Colors.white70),
+            icon: const Icon(Icons.settings_rounded, color: Colors.white70),
           ),
         ],
       ),

@@ -12,6 +12,10 @@ import 'home_screen.dart' show RecentCard;
 import 'track_list_screen.dart';
 
 const _suggestions = ['lofi indonesia', 'pop indonesia', 'indie indonesia', 'remix dj', 'chill lofi', 'focus music'];
+const _genres = [
+  'Pop', 'Dangdut', 'Hip Hop', 'Rock', 'Indie', 'Santai', 'Semangat', 'Galau',
+  'Akustik', 'K-Pop', 'Jazz', 'Koplo', 'Fokus', 'Tidur',
+];
 
 class SearchScreen extends StatefulWidget {
   final void Function(Track, List<Track>) onPlay;
@@ -284,9 +288,48 @@ class _SearchScreenState extends State<SearchScreen> {
                   ],
                 ),
               ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 26, 20, 12),
+              child: Text('Jelajahi semua',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Colors.white)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: GridView.count(
+                crossAxisCount: 2,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 10,
+                childAspectRatio: 2.6,
+                children: [
+                  for (final g in _genres)
+                    PressScale(
+                      onTap: () => _runGenre(g),
+                      child: Container(
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: op(Colors.white, 0.07),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(g,
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ],
         );
       },
     );
+  }
+
+  void _runGenre(String g) {
+    _ctrl.text = g;
+    _onChanged(g);
+    _debounce?.cancel();
+    _search();
   }
 }
