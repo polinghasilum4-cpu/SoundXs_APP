@@ -14,14 +14,6 @@ class Track {
   final String streamType;
   final String trackAuthorization;
 
-  /// ID & foto artis (dari objek `user` API) -> dipakai halaman Artis.
-  final String artistId;
-  final String artistAvatar;
-
-  /// `true` hanya jika penyedia menandai lagu boleh diunduh. `null` = tidak diketahui.
-  /// Unduhan offline hanya diizinkan untuk `true` (hormati hak cipta/ketentuan API).
-  final bool? downloadable;
-
   const Track({
     required this.id,
     required this.title,
@@ -35,9 +27,6 @@ class Track {
     this.trackCount = 0,
     this.streamType = '',
     this.trackAuthorization = '',
-    this.artistId = '',
-    this.artistAvatar = '',
-    this.downloadable,
   });
 
   static String _s(dynamic v) => v == null ? '' : v.toString();
@@ -83,14 +72,8 @@ class Track {
     var artist = _pick([user['username'], json['artist'], json['author'], json['channel']]);
     if (artist.isEmpty) artist = k == ItemKind.user ? 'Artis' : 'Unknown';
 
-    final rawDl = json['downloadable'];
-    bool? dl = rawDl is bool ? rawDl : null;
-    final policy = _s(json['policy']).toUpperCase();
-    if (policy == 'BLOCK') dl = false;
-
-    final id = _pick([json['id'], json['videoId']]);
     return Track(
-      id: id,
+      id: _pick([json['id'], json['videoId']]),
       title: title.isEmpty ? 'Tanpa judul' : title,
       artist: artist,
       coverUrl: artwork,
@@ -102,9 +85,6 @@ class Track {
       trackCount: _i(json['track_count']),
       streamType: _s(json['stream_type']),
       trackAuthorization: _s(json['track_authorization']),
-      artistId: k == ItemKind.user ? id : _pick([user['id'], json['artist_id']]),
-      artistAvatar: _pick([user['avatar_url'], json['artist_avatar']]),
-      downloadable: dl,
     );
   }
 
@@ -121,9 +101,6 @@ class Track {
         'stream_url': streamUrl,
         'stream_type': streamType,
         'track_authorization': trackAuthorization,
-        'artist_id': artistId,
-        'artist_avatar': artistAvatar,
-        if (downloadable != null) 'downloadable': downloadable,
       };
 
   Track copyWith({String? streamUrl}) => Track(
@@ -139,9 +116,6 @@ class Track {
         trackCount: trackCount,
         streamType: streamType,
         trackAuthorization: trackAuthorization,
-        artistId: artistId,
-        artistAvatar: artistAvatar,
-        downloadable: downloadable,
       );
 
   bool get hasStream => streamUrl.isNotEmpty;
