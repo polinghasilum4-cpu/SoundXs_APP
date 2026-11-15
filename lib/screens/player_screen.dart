@@ -597,7 +597,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ctype.contains('x-mpegurl') ||
             ctype.contains('vnd.apple.mpegurl');
 
-        List<int> bytes;
+        late Uint8List bytes;
 
         if (looksPlaylist || ctype.contains('mpegurl')) {
           // Baca playlist; cari URL media (bisa nested master → media playlist → segmen)
@@ -654,13 +654,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
               if (r.statusCode < 200 || r.statusCode >= 400) continue;
               buf.add(await r.stream.toBytes());
             }
-            bytes = buf.takeBytes();
+            bytes = buf.toBytes();
             ctype = 'audio/mp4';
           } else {
-            bytes = await streamed.stream.toBytes();
+            bytes = Uint8List.fromList(await streamed.stream.toBytes());
           }
         } else {
-          bytes = await streamed.stream.toBytes();
+          bytes = Uint8List.fromList(await streamed.stream.toBytes());
         }
 
         if (bytes.length < 20 * 1024) {
