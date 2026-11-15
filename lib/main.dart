@@ -29,9 +29,14 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.soundxs.app.channel.audio',
       androidNotificationChannelName: 'SoundXs Playback',
-      // audio_service mewajibkan: ongoing hanya valid jika stopForegroundOnPause = true
+      androidNotificationChannelDescription: 'Kontrol pemutaran SoundXs',
+      // ongoing hanya valid jika stopForegroundOnPause = true (aturan audio_service)
       androidNotificationOngoing: true,
       androidStopForegroundOnPause: true,
+      androidNotificationClickStartsActivity: true,
+      androidShowNotificationBadge: true,
+      fastForwardInterval: Duration(seconds: 10),
+      rewindInterval: Duration(seconds: 10),
     ),
   );
   audioHandler.onTrackStarted = store.recordPlay;
