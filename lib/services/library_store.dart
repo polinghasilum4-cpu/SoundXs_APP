@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/track.dart';
@@ -18,6 +19,7 @@ class LibraryStore extends ChangeNotifier {
   List<Track> liked = [];
   List<Track> recent = [];
   List<Track> savedPlaylists = [];
+  final Map<String, String> lyricOverrides = {};
   final Map<String, int> _plays = {};
   final Map<String, Track> _meta = {};
   /// trackId -> path file lokal untuk offline
@@ -53,6 +55,23 @@ class LibraryStore extends ChangeNotifier {
       if (off is Map) {
         off.forEach((k, v) {
           if (v is String && v.isNotEmpty) offlinePaths[k.toString()] = v;
+        });
+      }
+      // Bersihkan catatan offline yatim dari file yang sudah dihapus / versi lama.
+      final stale = offlinePaths.entries
+          .where((e) => !File(e.value).existsSync())
+          .map((e) => e.key)
+          .toList();
+      for (final id in stale) {
+        offlinePaths.remove(id);
+      }
+      if (stale.isNotEmpty) {
+        await p.setString('lib_offline', jsonEncode(offlinePaths));
+      }
+      final lyricRaw = jsonDecode(p.getString('lib_lyrics') ?? '{}');
+      if (lyricRaw is Map) {
+        lyricRaw.forEach((k, v) {
+          if (v is String && v.trim().isNotEmpty) lyricOverrides[k.toString()] = v;
         });
       }
     } catch (_) {}
@@ -153,6 +172,18 @@ class LibraryStore extends ChangeNotifier {
     return l.take(n).toList();
   }
 
+  String? lyricsOverride(String id) => lyricOverrides[id];
+
+  void setLyricsOverride(String id, String? lyrics) {
+    final value = lyrics?.trim() ?? '';
+    if (value.isEmpty) {
+      lyricOverrides.remove(id);
+    } else {
+      lyricOverrides[id] = value;
+    }
+    _changed();
+  }
+
   void clearHistory() {
     recent = [];
     _plays.clear();
@@ -171,9 +202,18 @@ class LibraryStore extends ChangeNotifier {
     _changed();
   }
 
-  void removeOffline(String id) {
+  Future<bool> removeOffline(String id) async {
+    final path = offlinePaths[id];
+    if (path == null || path.isEmpty) return false;
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      return false;
+    }
     offlinePaths.remove(id);
     _changed();
+    return true;
   }
 
   List<Track> get offlineTracks {
@@ -216,6 +256,7 @@ class LibraryStore extends ChangeNotifier {
     await p.setString('lib_plays', jsonEncode(_plays));
     await p.setString('lib_meta', jsonEncode(_meta.map((k, v) => MapEntry(k, v.toJson()))));
     await p.setString('lib_offline', jsonEncode(offlinePaths));
+    await p.setString('lib_lyrics', jsonEncode(lyricOverrides));
     await p.setBool('island_on', islandOn);
     await p.setString('island_style', islandStyle);
     await p.setBool('island_pop', islandPop);

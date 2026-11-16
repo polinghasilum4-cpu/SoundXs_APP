@@ -249,7 +249,9 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     }
 
     try {
-      await start(t.hasStream ? t : await _fresh(t));
+      final localPath = store.offlinePath(t.id);
+      final hasLocalFile = localPath != null && await File(localPath).exists();
+      await start(hasLocalFile || t.hasStream ? t : await _fresh(t));
     } catch (_) {
       if (token != _token) return;
       try {
