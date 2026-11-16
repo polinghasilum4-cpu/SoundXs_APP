@@ -106,7 +106,7 @@ class _SearchScreenState extends State<SearchScreen> {
         title: t.title,
         subtitle: isPl ? '${t.artist}${t.trackCount > 0 ? ' • ${t.trackCount} lagu' : ''}' : 'Artis',
         coverUrl: t.coverUrl,
-        loader: isPl ? () => _api.getPlaylistTracks(t.id) : () => _api.search(t.title),
+        loader: isPl ? () => _api.getPlaylistTracks(t.id) : () => _api.getArtistTracks(t),
         onPlay: widget.onPlay,
         playlist: isPl ? t : null,
       ),

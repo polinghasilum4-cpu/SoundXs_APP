@@ -93,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       // Timeout longgar + retry; cold start sering gagal karena client_id belum siap
       Future<List<Track>> once() => _api.search(MOOD_QUERY[mood]!).timeout(
-            const Duration(seconds: 40),
+            const Duration(seconds: 20),
             onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
           );
       List<Track> res;

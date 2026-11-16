@@ -15,26 +15,47 @@ class ProfileScreen extends StatelessWidget {
   bool get _isIos => !kIsWeb && Platform.isIOS;
 
   Future<void> _toggleIsland(BuildContext context, bool v) async {
-    if (v && _isAndroid && !await island.hasPermission()) {
-      if (!context.mounted) return;
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: C.surface,
-          title: const Text('Izin tampil di atas aplikasi lain'),
-          content: const Text(
-              'Dynamic Island butuh izin "Tampilkan di atas aplikasi lain" supaya bisa melayang di dekat kamera saat kamu membuka aplikasi lain.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Buka pengaturan')),
-          ],
-        ),
-      );
-      if (ok != true) return;
-      await island.requestPermission();
-      if (!await island.hasPermission()) return; // user belum mengizinkan
+    if (!v) {
+      store.setIsland(on: false);
+      return;
     }
-    store.setIsland(on: v);
+    final messenger = ScaffoldMessenger.of(context);
+    if (_isAndroid) {
+      if (!await island.hasPermission()) {
+        if (!context.mounted) return;
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: C.surface,
+            title: const Text('Izin tampil di atas aplikasi lain'),
+            content: const Text(
+                'Dynamic Island butuh izin "Tampilkan di atas aplikasi lain" supaya bisa melayang saat kamu membuka aplikasi lain.\n\n'
+                'Di Samsung, matikan "Hapus izin & kosongkan ruang penyimpanan" untuk SoundXs di Pengaturan > Aplikasi, supaya izin tidak dicabut otomatis.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Buka pengaturan')),
+            ],
+          ),
+        );
+        if (ok != true) return;
+        final granted = await island.ensureOverlayPermission();
+        if (!granted) {
+          messenger.showSnackBar(const SnackBar(
+            content: Text('Izin belum diberikan. Dynamic Island tetap mati.'),
+            behavior: SnackBarBehavior.floating,
+          ));
+          return;
+        }
+      }
+      final notif = await island.ensureNotificationPermission();
+      if (!notif) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text('Notifikasi belum diizinkan, kontrol pemutaran di panel notifikasi tidak akan tampil.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    }
+    store.setIsland(on: true);
   }
 
   @override
