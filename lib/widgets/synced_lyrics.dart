@@ -17,6 +17,8 @@ class SyncedLyrics extends StatefulWidget {
     required this.current,
     required this.position,
     required this.onSeek,
+    this.followPosition = true,
+    this.showIntervals = false,
   });
 
   final List<LyricLine> lines;
@@ -24,6 +26,8 @@ class SyncedLyrics extends StatefulWidget {
   final Duration current;
   final Stream<Duration> position;
   final ValueChanged<Duration> onSeek;
+  final bool followPosition;
+  final bool showIntervals;
 
   @override
   State<SyncedLyrics> createState() => _SyncedLyricsState();
@@ -47,7 +51,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     if (widget.synced) {
       _sub = widget.position.listen(_onPos);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _active >= 0) _follow(_active, instant: true);
+        if (mounted && _active >= 0 && widget.followPosition) _follow(_active, instant: true);
       });
     }
   }
@@ -59,6 +63,23 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
       _keys
         ..clear()
         ..addAll(List.generate(widget.lines.length, (_) => GlobalKey()));
+    }
+    if (old.synced != widget.synced) {
+      _sub?.cancel();
+      _sub = widget.synced ? widget.position.listen(_onPos) : null;
+      final ms = widget.current.inMilliseconds.toDouble();
+      _active = _indexAt(ms);
+      _lineProgress = _progressAt(ms, _active);
+      if (widget.synced && widget.followPosition) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _follow(_active, instant: true);
+        });
+      }
+    }
+    if (!old.followPosition && widget.followPosition) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _follow(_active);
+      });
     }
   }
 
@@ -119,11 +140,12 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
         _active = i;
         _lineProgress = prog;
       });
-      if (lineChanged && i >= 0 && !_userDragging) _follow(i);
+      if (lineChanged && i >= 0 && !_userDragging && widget.followPosition) _follow(i);
     }
   }
 
   void _follow(int i, {bool instant = false}) {
+    if (!widget.followPosition && !instant) return;
     if (i < 0 || i >= _keys.length) return;
     final ctx = _keys[i].currentContext;
     if (ctx == null) return;
@@ -190,13 +212,40 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < widget.lines.length; i++) _line(i),
+                  for (var i = 0; i < widget.lines.length; i++) ...[
+                    if (widget.showIntervals && widget.synced && _gapBefore(i) >= 5000) _interval(_gapBefore(i)),
+                    _line(i),
+                  ],
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+
+  double _gapBefore(int i) {
+    if (i <= 0 || i >= widget.lines.length) return 0;
+    final previous = widget.lines[i - 1];
+    final end = previous.endMs ?? previous.startMs + 4000;
+    return widget.lines[i].startMs - end;
+  }
+
+  Widget _interval(double gapMs) {
+    final seconds = (gapMs / 1000).round();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        children: [
+          const Expanded(child: Divider(color: Color(0x33FFFFFF))),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text('Jeda • ${seconds}s', style: const TextStyle(color: C.dim, fontSize: 11)),
+          ),
+          const Expanded(child: Divider(color: Color(0x33FFFFFF))),
+        ],
+      ),
     );
   }
 
