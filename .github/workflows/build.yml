@@ -41,6 +41,8 @@ jobs:
           flutter create --platforms=android --org com.soundxs --project-name soundxs_app /tmp/soundxs_scaffold
           mkdir -p android
           cp -rn /tmp/soundxs_scaffold/android/. android/
+          # buang MainActivity hasil scaffold; yang dipakai adalah com.soundxs.app
+          find android/app/src/main -name MainActivity.kt ! -path '*/com/soundxs/app/*' -delete
           test -f android/gradlew
           test -f android/app/src/main/AndroidManifest.xml
 
@@ -57,6 +59,9 @@ jobs:
 
       - name: Resolve Flutter dependencies
         run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Build release APK
         run: flutter build apk --release
