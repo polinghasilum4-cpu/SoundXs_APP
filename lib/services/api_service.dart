@@ -53,12 +53,17 @@ class ApiService {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 13; SM-A135F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  Future<dynamic> _getJson(Uri uri, {void Function(int status)? onStatus}) async {
-    for (var attempt = 0; attempt < 2; attempt++) {
+  Future<dynamic> _getJson(
+    Uri uri, {
+    void Function(int status)? onStatus,
+    Duration? timeout,
+    int retries = 2,
+  }) async {
+    for (var attempt = 0; attempt < retries; attempt++) {
       try {
         final res = await _http
             .get(uri, headers: {'Accept': 'application/json', 'User-Agent': _ua})
-            .timeout(_timeout);
+            .timeout(timeout ?? _timeout);
         onStatus?.call(res.statusCode);
         dynamic data;
         try {
@@ -72,11 +77,11 @@ class ApiService {
         }
         return data;
       } on TimeoutException {
-        if (attempt == 1) throw ApiException('Koneksi lambat, coba lagi.');
+        if (attempt == retries - 1) throw ApiException('Koneksi lambat, coba lagi.');
       } on SocketException {
-        if (attempt == 1) throw ApiException('Tidak ada koneksi internet.');
+        if (attempt == retries - 1) throw ApiException('Tidak ada koneksi internet.');
       } on http.ClientException {
-        if (attempt == 1) throw ApiException('Tidak ada koneksi internet.');
+        if (attempt == retries - 1) throw ApiException('Tidak ada koneksi internet.');
       }
     }
     throw ApiException('Koneksi gagal.');
@@ -145,13 +150,32 @@ class ApiService {
     if (data is Map && data['success'] == false) {
       throw ApiException(data['error']?.toString() ?? 'Request gagal');
     }
-    final list = data is List
-        ? data
-        : (data is Map ? (data['collection'] ?? data['results'] ?? data['data']) : null);
-    if (list is! List) throw ApiException('Format data tidak dikenali');
+    // Backend dapat mengembalikan array langsung atau membungkus daftar
+    // di collection/tracks/results/data. Normalisasi semua bentuk tersebut.
+    dynamic normalized = data;
+    if (normalized is Map) {
+      for (final key in const ['collection', 'tracks', 'results', 'data']) {
+        final candidate = normalized[key];
+        if (candidate is List) {
+          normalized = candidate;
+          break;
+        }
+        if (candidate is Map) {
+          for (final nestedKey in const ['collection', 'tracks', 'results']) {
+            final nested = candidate[nestedKey];
+            if (nested is List) {
+              normalized = nested;
+              break;
+            }
+          }
+          if (normalized is List) break;
+        }
+      }
+    }
+    if (normalized is! List) throw ApiException('Format data tidak dikenali');
 
     final out = <Track>[];
-    for (final e in list) {
+    for (final e in normalized) {
       if (e is! Map) continue;
       final t = Track.fromJson(Map<String, dynamic>.from(e), kind: kind);
       if (t.id.isNotEmpty) out.add(t);
@@ -166,7 +190,9 @@ class ApiService {
   Future<List<Track>> searchArtists(String q) =>
       _requestSearch({'q': q.trim(), 'type': 'users'}, ItemKind.user);
   Future<List<Track>> getPlaylistTracks(String id) =>
-      _requestSearch({'playlist_id': id, 'type': 'tracks'}, ItemKind.track);
+      // SoundCloud mengembalikan halaman kecil secara default. Minta batas
+      // maksimum yang didukung API agar playlist tidak terpotong menjadi beberapa lagu.
+      _requestSearch({'playlist_id': id, 'type': 'tracks', 'limit': '200'}, ItemKind.track);
 
   /// URL stream lewat proxy server (sama seperti versi web):
   /// /api/stream?url=<stream_url SoundCloud>&client_id=...&track_authorization=...
@@ -236,8 +262,6 @@ class ApiService {
       (title: title0.isNotEmpty ? title0 : t.title, artist: artist0),
       if (title0.contains(' '))
         (title: title0.split(' ').take(4).join(' '), artist: artist0),
-      (title: title0.isNotEmpty ? title0 : t.title, artist: ''),
-      (title: t.title.length > 60 ? t.title.substring(0, 60) : t.title, artist: artist0),
     ];
 
     LyricsResult? best;
@@ -251,6 +275,8 @@ class ApiService {
         };
         final data = await _getJson(
           Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params),
+          timeout: const Duration(seconds: 5),
+          retries: 1,
         );
         if (data is! Map || data['success'] != true) continue;
         final raw = data['lines'];
@@ -289,7 +315,7 @@ class ApiService {
       final response = await _http.get(uri, headers: {
         'Accept': 'application/json',
         'User-Agent': 'SoundXs/1.1 (Android; lyrics lookup)',
-      }).timeout(const Duration(seconds: 12));
+      }).timeout(const Duration(seconds: 8));
       if (response.statusCode == 200) {
         final decoded = jsonDecode(utf8.decode(response.bodyBytes));
         if (decoded is List) {
