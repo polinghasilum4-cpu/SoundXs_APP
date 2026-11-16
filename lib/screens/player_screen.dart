@@ -647,10 +647,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!await dir.exists()) await dir.create(recursive: true);
       final safeId = t.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       final file = File('${dir.path}/$safeId.$outExt');
-      await file.writeAsBytes(bytes, flush: true);
-
-      if (!await file.exists() || await file.length() < 30 * 1024) {
-        throw Exception('Gagal menyimpan file ke disk');
+      final tempFile = File('${file.path}.part');
+      try {
+        await tempFile.writeAsBytes(bytes, flush: true);
+        if (!await tempFile.exists() || await tempFile.length() < 30 * 1024) {
+          throw Exception('Gagal menyimpan file ke disk');
+        }
+        // File parsial tidak pernah ditandai sebagai unduhan offline.
+        if (await file.exists()) await file.delete();
+        await tempFile.rename(file.path);
+      } catch (_) {
+        if (await tempFile.exists()) await tempFile.delete();
+        rethrow;
       }
 
       store.markOffline(src, file.path);
@@ -698,16 +706,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     }
 
-    var ok = 0;
-    for (final seg in segs) {
-      final r = await get(seg, sec: 45);
-      if (r.statusCode < 200 || r.statusCode >= 400 || r.bodyBytes.isEmpty) {
-        throw Exception('Gagal mengunduh segmen audio ($ok/${segs.length})');
+    // Ambil beberapa segmen bersamaan agar playlist panjang tidak memakan
+    // waktu terlalu lama. Future.wait tetap mengembalikan urutan sesuai input.
+    const batchSize = 6;
+    var completed = 0;
+    for (var start = 0; start < segs.length; start += batchSize) {
+      final end = start + batchSize < segs.length ? start + batchSize : segs.length;
+      final batch = segs.sublist(start, end);
+      final responses = await Future.wait(batch.map((url) => get(url, sec: 45)));
+      for (final response in responses) {
+        if (response.statusCode < 200 || response.statusCode >= 400 || response.bodyBytes.isEmpty) {
+          throw Exception('Gagal mengunduh segmen audio ($completed/${segs.length})');
+        }
+        buf.add(response.bodyBytes);
+        completed++;
       }
-      buf.add(r.bodyBytes);
-      ok++;
     }
-    if (ok != segs.length) throw Exception('Unduhan audio belum lengkap');
+    if (completed != segs.length) throw Exception('Unduhan audio belum lengkap');
     return buf.toBytes();
   }
 
