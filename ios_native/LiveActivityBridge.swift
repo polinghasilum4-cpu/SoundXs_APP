@@ -5,8 +5,11 @@ import UIKit
 
 @available(iOS 16.2, *)
 final class LiveActivityBridge {
-    /// HARUS sama dengan App Group yang kamu buat di Xcode (Runner + SoundXsIsland).
-    static let appGroup = "group.com.soundxs.app"
+    /// HARUS sama dengan App Group yang dibuat di Xcode (Runner + SoundXsIsland).
+    static let appGroup = SxCommandBus.appGroup
+
+    /// Singleton supaya callback notifikasi Darwin (fungsi C, tanpa capture) bisa menemukan instance.
+    static var shared: LiveActivityBridge?
 
     private let channel: FlutterMethodChannel
     private var current: Activity<SoundXsActivityAttributes>?
@@ -28,6 +31,26 @@ final class LiveActivityBridge {
                 result(FlutterMethodNotImplemented)
             }
         }
+
+        LiveActivityBridge.shared = self
+        // Tombol Live Activity -> SxCommandBus.post -> notifikasi ini -> kirim ke Dart.
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            nil,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async { LiveActivityBridge.shared?.flushCommand() }
+            },
+            SxCommandBus.darwinName,
+            nil,
+            .deliverImmediately
+        )
+    }
+
+    private func flushCommand() {
+        let d = UserDefaults(suiteName: SxCommandBus.appGroup)
+        guard let cmd = d?.string(forKey: SxCommandBus.key) else { return }
+        d?.removeObject(forKey: SxCommandBus.key)
+        channel.invokeMethod("command", arguments: ["c": cmd])
     }
 
     private func num(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
@@ -65,7 +88,7 @@ final class LiveActivityBridge {
         if let act = current, act.activityState == .active {
             await act.update(content)
         } else {
-            // Activity.request hanya boleh dipanggil saat app di foreground
+            // Activity.request hanya boleh saat app di foreground atau sedang memutar audio.
             do {
                 current = try Activity.request(
                     attributes: SoundXsActivityAttributes(),

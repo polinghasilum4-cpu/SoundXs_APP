@@ -1,12 +1,12 @@
 // File utama widget extension "SoundXsIsland" (Xcode: File > New > Target > Widget Extension,
-// centang "Include Live Activity", hapus file template bawaan lalu pakai file ini).
-// Tambahkan juga SoundXsActivityAttributes.swift ke target ini.
+// centang "Include Live Activity"). Tambahkan juga SoundXsActivityAttributes.swift dan SoundXsIntents.swift.
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
-private let appGroup = "group.com.soundxs.app"   // samakan dengan LiveActivityBridge.appGroup
-private let mint = Color(red: 0.475, green: 0.788, blue: 0.722)
+private let appGroup = "group.com.soundxs.app"   // samakan dengan SxCommandBus.appGroup
+private let mint = Color(red: 1.0, green: 0.702, blue: 0.690)   // C.mint di Flutter (#FFB3B0)
 
 @main
 struct SoundXsIslandBundle: WidgetBundle {
@@ -16,9 +16,8 @@ struct SoundXsIslandBundle: WidgetBundle {
 struct SoundXsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SoundXsActivityAttributes.self) { context in
-            // Lock Screen / banner (juga dipakai iPhone tanpa Dynamic Island)
             LockScreenView(state: context.state)
-                .activityBackgroundTint(.black)
+                .activityBackgroundTint(Color.black.opacity(0.85))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
@@ -37,7 +36,10 @@ struct SoundXsLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ProgressBar(state: context.state)
+                    VStack(spacing: 6) {
+                        ProgressBar(state: context.state)
+                        ControlsRow(state: context.state)
+                    }
                 }
             } compactLeading: {
                 ArtworkView(file: context.state.artworkFile, size: 22, circle: true)
@@ -60,9 +62,37 @@ struct LockScreenView: View {
                 Text(state.title).font(.headline).lineLimit(1)
                 Text(state.artist).font(.subheadline).foregroundColor(.secondary).lineLimit(1)
                 ProgressBar(state: state)
+                ControlsRow(state: state)
             }
         }
         .padding(14)
+    }
+}
+
+/// Tombol prev / play-pause / next. Butuh iOS 17 (LiveActivityIntent). Di iOS 16.2 hanya tampil info.
+struct ControlsRow: View {
+    let state: SoundXsActivityAttributes.ContentState
+    var body: some View {
+        if #available(iOS 17.0, *) {
+            HStack(spacing: 30) {
+                Button(intent: SxPrevIntent()) {
+                    Image(systemName: "backward.fill")
+                }
+                Button(intent: SxPlayPauseIntent()) {
+                    Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                }
+                Button(intent: SxNextIntent()) {
+                    Image(systemName: "forward.fill")
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.title3)
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+        } else {
+            EmptyView()
+        }
     }
 }
 
