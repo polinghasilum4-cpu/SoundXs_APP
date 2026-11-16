@@ -4,10 +4,12 @@ import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:async';
 import 'app.dart';
 import 'core/perf.dart';
 import 'globals.dart';
 import 'island/island_overlay.dart';
+import 'services/api_service.dart';
 import 'services/audio_handler.dart';
 import 'services/island_service.dart';
 
@@ -53,6 +55,9 @@ Future<void> main() async {
   } catch (_) {}
 
   island = IslandService(audioHandler, store)..init();
+
+  // client_id disiapkan sekarang, jadi Beranda tidak menunggu kredensial saat pertama dibuka.
+  unawaited(ApiService().warmUp());
 
   runApp(const SoundXsApp());
 
