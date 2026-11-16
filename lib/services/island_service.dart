@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../core/perf.dart';
 import '../island/island_consts.dart';
 import '../models/track.dart';
@@ -66,6 +67,30 @@ class IslandService with WidgetsBindingObserver {
     try {
       final r = await FlutterOverlayWindow.requestPermission();
       return r ?? await hasPermission();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Izin overlay dibuka di pengaturan sistem, jadi requestPermission() balik sebelum user mengizinkan.
+  /// Fungsi ini menunggu (sampai `wait`) sampai user kembali dan izinnya aktif.
+  Future<bool> ensureOverlayPermission({Duration wait = const Duration(seconds: 60)}) async {
+    if (!_isAndroid) return true;
+    if (await hasPermission()) return true;
+    await requestPermission();
+    final end = DateTime.now().add(wait);
+    while (DateTime.now().isBefore(end)) {
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      if (await hasPermission()) return true;
+    }
+    return false;
+  }
+
+  /// Notifikasi dibutuhkan agar kontrol pemutaran (play, next, suka) tampil di panel notifikasi.
+  Future<bool> ensureNotificationPermission() async {
+    if (!_isAndroid) return true;
+    try {
+      return (await Permission.notification.request()).isGranted;
     } catch (_) {
       return false;
     }
@@ -195,40 +220,45 @@ class IslandService with WidgetsBindingObserver {
   // ───────────── Perintah kontrol (dari overlay Android & tombol iOS) ─────────────
   void _command(String? c) {
     if (c == null || c.isEmpty) return;
+    unawaited(_runCommand(c));
+  }
+
+  Future<void> _runCommand(String command) async {
     try {
-      switch (c) {
+      switch (command) {
         case 'toggle':
-        case 'play':
-        case 'pause':
-          if (c == 'play') {
-            unawaited(handler.play());
-          } else if (c == 'pause') {
-            unawaited(handler.pause());
+          if (handler.player.playing) {
+            await handler.pause();
           } else {
-            if (handler.player.playing) {
-              unawaited(handler.pause());
-            } else {
-              unawaited(handler.play());
-            }
+            await handler.play();
           }
           break;
+        case 'play':
+          await handler.play();
+          break;
+        case 'pause':
+          await handler.pause();
+          break;
         case 'next':
-          unawaited(handler.skipToNext());
+          await handler.skipToNext();
           break;
         case 'prev':
-          unawaited(handler.skipToPrevious());
+          await handler.skipToPrevious();
           break;
         case 'sync':
           break;
         default:
-          debugPrint('IslandService unknown command: $c');
+          debugPrint('IslandService unknown command: $command');
+          return;
       }
-    } catch (e) {
-      debugPrint('IslandService command error ($c): $e');
+    } catch (e, st) {
+      debugPrint('IslandService command error ($command): $e\\n$st');
+    } finally {
+      // Sinkronkan ulang status aktual setelah perintah selesai, bukan
+      // menebak status dari animasi tombol di overlay.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await _push();
     }
-    // kirim status SEBENARNYA setelah perintah (overlay tidak menebak sendiri)
-    Future<void>.delayed(const Duration(milliseconds: 150), () => _push());
-    Future<void>.delayed(const Duration(milliseconds: 400), () => _push());
   }
 
   void _onOverlayMessage(dynamic msg) {

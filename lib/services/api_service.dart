@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
-import '../config/api_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/api_config.dart';
 import '../models/track.dart';
 
 class ApiException implements Exception {
@@ -28,6 +28,8 @@ class LyricsResult {
   bool get isEmpty => lines.isEmpty;
 }
 
+typedef _LyricCand = ({String title, String artist});
+
 class _Cached {
   final List<Track> items;
   final DateTime at = DateTime.now();
@@ -35,31 +37,55 @@ class _Cached {
 }
 
 /// Singleton: `ApiService()` selalu mengembalikan instance yang sama,
-/// jadi cache + client HTTP dipakai bersama semua layar.
+/// jadi cache, client HTTP, dan client_id dipakai bersama semua layar.
 class ApiService {
   ApiService._();
   static final ApiService _instance = ApiService._();
   factory ApiService() => _instance;
 
   static const _api = '/api';
-  static const _timeout = Duration(seconds: 28);
+  // Per percobaan. Cold start Vercel biasanya selesai di bawah ini; kalau belum, retry.
+  static const _timeout = Duration(seconds: 12);
   static const _ttl = Duration(minutes: 5);
+
+  static const _credKey = 'sc_client_id';
+  static const _credAtKey = 'sc_client_id_at';
+  static const _credTtlMs = 12 * 60 * 60 * 1000;
+
+  static const _ua =
+      'Mozilla/5.0 (Linux; Android 13; SM-A135F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  static final _lrcLine = RegExp(r'^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$');
+  static final _emoji = RegExp(r'[\u{10000}-\u{10FFFF}\u2600-\u27BF\uFE0F\u200D]', unicode: true);
+  static final _brackets = RegExp(r'\([^)]*\)|\[[^\]]*\]');
+  static final _noise = RegExp(
+    r'(?i)\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
+  );
+  static final _year = RegExp(r'\b20[0-3][0-9]\b');
+  static final _space = RegExp(r'\s+');
+  static final _sep = RegExp(r'[|_~•·]+');
 
   final http.Client _http = http.Client();
   final Map<String, _Cached> _cache = {};
   final Map<String, Future<List<Track>>> _inflight = {};
   String? _clientId;
+  Future<String>? _credFuture;
 
-  static const _ua =
-      'Mozilla/5.0 (Linux; Android 13; SM-A135F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  /// Dipanggil saat app start: client_id siap sebelum Beranda minta data.
+  Future<void> warmUp() async {
+    try {
+      await getCredentials();
+    } catch (_) {}
+  }
 
   Future<dynamic> _getJson(
     Uri uri, {
     void Function(int status)? onStatus,
     Duration? timeout,
-    int retries = 2,
+    int retries = 3,
   }) async {
-    for (var attempt = 0; attempt < retries; attempt++) {
+    ApiException? last;
+    for (var attempt = 1; attempt <= retries; attempt++) {
       try {
         final res = await _http
             .get(uri, headers: {'Accept': 'application/json', 'User-Agent': _ua})
@@ -71,34 +97,45 @@ class ApiService {
         } catch (_) {
           data = null;
         }
-        if (res.statusCode != 200) {
-          final msg = data is Map ? data['error'] : null;
-          throw ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
-        }
-        return data;
+        if (res.statusCode == 200) return data;
+        final msg = data is Map ? data['error'] : null;
+        last = ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
+        final retryable = res.statusCode >= 500 || res.statusCode == 429;
+        if (!retryable) throw last;
       } on TimeoutException {
-        if (attempt == retries - 1) throw ApiException('Koneksi lambat, coba lagi.');
+        last = ApiException('Server lambat, coba lagi.');
       } on SocketException {
-        if (attempt == retries - 1) throw ApiException('Tidak ada koneksi internet.');
+        last = ApiException('Tidak ada koneksi internet.');
       } on http.ClientException {
-        if (attempt == retries - 1) throw ApiException('Tidak ada koneksi internet.');
+        last = ApiException('Tidak ada koneksi internet.');
+      }
+      if (attempt < retries) {
+        await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
       }
     }
-    throw ApiException('Koneksi gagal.');
+    throw last ?? ApiException('Koneksi gagal.');
   }
 
-  static const _credKey = 'sc_client_id';
-  static const _credAtKey = 'sc_client_id_at';
-  static const _credTtlMs = 12 * 60 * 60 * 1000;
+  /// client_id disimpan di perangkat (12 jam). Permintaan bersamaan berbagi satu future.
+  Future<String> getCredentials({bool force = false}) {
+    if (!force && _clientId != null) return Future.value(_clientId);
+    final running = _credFuture;
+    if (!force && running != null) return running;
+    final f = _loadCredentials(force);
+    _credFuture = f;
+    return f.whenComplete(() {
+      if (identical(_credFuture, f)) _credFuture = null;
+    });
+  }
 
-  /// client_id disimpan di perangkat (12 jam). Cold start tidak perlu scrape ulang -> lebih cepat.
-  Future<String> getCredentials({bool force = false}) async {
-    if (_clientId != null && !force) return _clientId!;
+  Future<String> _loadCredentials(bool force) async {
     final prefs = await SharedPreferences.getInstance();
     if (!force) {
       final saved = prefs.getString(_credKey);
       final at = prefs.getInt(_credAtKey) ?? 0;
-      if (saved != null && saved.length >= 20 && DateTime.now().millisecondsSinceEpoch - at < _credTtlMs) {
+      if (saved != null &&
+          saved.length >= 20 &&
+          DateTime.now().millisecondsSinceEpoch - at < _credTtlMs) {
         _clientId = saved;
         return saved;
       }
@@ -126,56 +163,56 @@ class ApiService {
     if (running != null) return running;
 
     final f = _fetchSearch(params, kind).then((items) {
-      _cache[key] = _Cached(items);
-      if (_cache.length > 40) _cache.remove(_cache.keys.first);
+      // Hasil kosong tidak di-cache, supaya percobaan berikutnya benar-benar mengambil data baru.
+      if (items.isNotEmpty) {
+        _cache[key] = _Cached(items);
+        if (_cache.length > 40) _cache.remove(_cache.keys.first);
+      }
       return items;
     }).whenComplete(() => _inflight.remove(key));
     _inflight[key] = f;
     return f;
   }
 
+  /// Backend bisa membungkus daftar di collection/tracks/results/data. Ambil list-nya.
+  List<dynamic>? _unwrapList(dynamic data) {
+    if (data is List) return data;
+    if (data is! Map) return null;
+    for (final key in const ['collection', 'tracks', 'results', 'data']) {
+      final c = data[key];
+      if (c is List) return c;
+      if (c is Map) {
+        for (final nk in const ['collection', 'tracks', 'results']) {
+          final n = c[nk];
+          if (n is List) return n;
+        }
+      }
+    }
+    return null;
+  }
+
   Future<List<Track>> _fetchSearch(Map<String, String> params, ItemKind kind) async {
     Uri build(String clientId) => Uri.parse('${ApiConfig.baseUrl}$_api/search')
         .replace(queryParameters: {...params, 'client_id': clientId});
 
-    var status = 200;
     dynamic data;
+    var status = 200;
     try {
       data = await _getJson(build(await getCredentials()), onStatus: (s) => status = s);
     } on ApiException {
       if (status != 401) rethrow;
-      data = await _getJson(build(await getCredentials(force: true))); // client_id kedaluwarsa
+      // client_id kedaluwarsa: ambil yang baru sekali, lalu coba lagi.
+      data = await _getJson(build(await getCredentials(force: true)));
     }
 
     if (data is Map && data['success'] == false) {
       throw ApiException(data['error']?.toString() ?? 'Request gagal');
     }
-    // Backend dapat mengembalikan array langsung atau membungkus daftar
-    // di collection/tracks/results/data. Normalisasi semua bentuk tersebut.
-    dynamic normalized = data;
-    if (normalized is Map) {
-      for (final key in const ['collection', 'tracks', 'results', 'data']) {
-        final candidate = normalized[key];
-        if (candidate is List) {
-          normalized = candidate;
-          break;
-        }
-        if (candidate is Map) {
-          for (final nestedKey in const ['collection', 'tracks', 'results']) {
-            final nested = candidate[nestedKey];
-            if (nested is List) {
-              normalized = nested;
-              break;
-            }
-          }
-          if (normalized is List) break;
-        }
-      }
-    }
-    if (normalized is! List) throw ApiException('Format data tidak dikenali');
+    final list = _unwrapList(data);
+    if (list == null) throw ApiException('Format data tidak dikenali');
 
     final out = <Track>[];
-    for (final e in normalized) {
+    for (final e in list) {
       if (e is! Map) continue;
       final t = Track.fromJson(Map<String, dynamic>.from(e), kind: kind);
       if (t.id.isNotEmpty) out.add(t);
@@ -189,14 +226,29 @@ class ApiService {
       _requestSearch({'q': q.trim(), 'type': 'playlists'}, ItemKind.playlist);
   Future<List<Track>> searchArtists(String q) =>
       _requestSearch({'q': q.trim(), 'type': 'users'}, ItemKind.user);
+
   Future<List<Track>> getPlaylistTracks(String id) =>
-      // SoundCloud mengembalikan halaman kecil secara default. Minta batas
-      // maksimum yang didukung API agar playlist tidak terpotong menjadi beberapa lagu.
+      // Minta batas maksimum agar playlist tidak terpotong menjadi beberapa lagu.
       _requestSearch({'playlist_id': id, 'type': 'tracks', 'limit': '200'}, ItemKind.track);
+
+  /// Lagu milik artis. Coba berdasarkan user_id dulu; kalau backend tidak mendukungnya,
+  /// jatuh ke pencarian nama artis dan menyaring lagu yang benar-benar dari artis itu.
+  Future<List<Track>> getArtistTracks(Track artist) async {
+    try {
+      final byId = await _requestSearch(
+        {'user_id': artist.id, 'type': 'tracks', 'limit': '200'},
+        ItemKind.track,
+      );
+      if (byId.isNotEmpty) return byId;
+    } catch (_) {}
+    final name = artist.title.trim().toLowerCase();
+    final byName = await search(artist.title);
+    final own = byName.where((e) => e.artist.trim().toLowerCase() == name).toList();
+    return own.isNotEmpty ? own : byName;
+  }
 
   /// URL stream lewat proxy server (sama seperti versi web):
   /// /api/stream?url=<stream_url SoundCloud>&client_id=...&track_authorization=...
-  /// Server membalas 302 ke CDN SoundCloud, player mengikuti redirect itu.
   Future<String> proxiedStream(Track t) async {
     if (t.streamUrl.isEmpty) return '';
     final id = await getCredentials();
@@ -207,8 +259,7 @@ class ApiService {
     }).toString();
   }
 
-  /// Ambil data lagu terbaru (stream_url + track_authorization) lewat pencarian,
-  /// untuk lagu tersimpan/disukai yang datanya sudah kedaluwarsa.
+  /// Ambil data lagu terbaru (stream_url + track_authorization) untuk lagu yang sudah kedaluwarsa.
   Future<Track?> refresh(Track t) async {
     final list = await search('${t.title} ${t.artist}');
     for (final e in list) {
@@ -221,149 +272,196 @@ class ApiService {
     return null;
   }
 
-  /// Bersihkan judul SoundCloud yang berantakan (emoji, tahun, tag viral, dll).
+  static String _collapse(String s) => s.replaceAll(_space, ' ').trim();
+
+  /// Bersihkan judul SoundCloud (emoji, tag viral, tahun, kurung).
   static String cleanTitle(String raw) {
-    var s = raw;
-    // Buang emoji (non-BMP) & simbol
-    s = s.replaceAll(RegExp(r'[\u{10000}-\u{10FFFF}]', unicode: true), ' ');
-    s = s.replaceAll(RegExp(r'[\u2600-\u27BF\uFE0F\u200D]'), ' ');
-    s = s.replaceAll(RegExp(r'\([^)]*\)|\[[^\]]*\]'), ' ');
-    s = s.replaceAll(
-      RegExp(
-        r'(?i)\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
-      ),
-      ' ',
-    );
-    s = s.replaceAll(RegExp(r'\b20[0-3][0-9]\b'), ' ');
-    if (s.contains(' - ')) {
-      final parts = s.split(' - ');
-      if (parts.first.trim().length >= 2) s = parts.first;
-    }
-    s = s.replaceAll(RegExp(r'[|_~•·]+'), ' ');
-    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return s;
+    var s = raw.replaceAll(_emoji, ' ');
+    s = s.replaceAll(_brackets, ' ');
+    s = s.replaceAll(_noise, ' ');
+    s = s.replaceAll(_year, ' ');
+    s = s.replaceAll(_sep, ' ');
+    return _collapse(s);
   }
 
-  static String cleanArtist(String raw) {
-    var s = raw.replaceAll(RegExp(r'[\u{10000}-\u{10FFFF}]', unicode: true), ' ');
-    s = s.replaceAll(RegExp(r'[\u2600-\u27BF\uFE0F]'), ' ');
-    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return s;
+  static String cleanArtist(String raw) => _collapse(raw.replaceAll(_emoji, ' '));
+
+  /// Kandidat (judul, artis) untuk pencarian lirik. Judul SoundCloud sering berbentuk
+  /// "Judul - Artis" atau "Artis - Judul", dan uploader belum tentu artisnya.
+  List<_LyricCand> _lyricCandidates(Track t) {
+    final out = <_LyricCand>[];
+    void add(String title, String artist) {
+      final ti = title.trim();
+      final ar = artist.trim();
+      if (ti.length < 2) return;
+      final dup = out.any((c) =>
+          c.title.toLowerCase() == ti.toLowerCase() && c.artist.toLowerCase() == ar.toLowerCase());
+      if (!dup) out.add((title: ti, artist: ar));
+    }
+
+    final uploader = cleanArtist(t.artist);
+    final raw = t.title;
+    if (raw.contains(' - ')) {
+      final parts = raw.split(' - ');
+      final left = cleanTitle(parts.first);
+      final right = cleanTitle(parts.sublist(1).join(' - '));
+      add(left, right);
+      add(right, left);
+    }
+    add(cleanTitle(raw), uploader);
+    add(cleanTitle(raw), '');
+    return out.take(4).toList();
   }
 
-  /// Lirik dari /api/lyrics (LRCLIB). Coba beberapa variasi judul/artis.
-  Future<LyricsResult> getLyrics(Track t) async {
-    final title0 = cleanTitle(t.title);
-    final artist0 = cleanArtist(t.artist);
-    final duration = t.durationMs > 0 ? (t.durationMs / 1000).round().toString() : null;
-
-    // Variasi query: judul bersih, judul asli pendek, tanpa artis, dll.
-    final attempts = <({String title, String artist})>[
-      (title: title0.isNotEmpty ? title0 : t.title, artist: artist0),
-      if (title0.contains(' '))
-        (title: title0.split(' ').take(4).join(' '), artist: artist0),
-    ];
-
-    LyricsResult? best;
-    for (final a in attempts) {
-      if (a.title.trim().length < 2) continue;
-      try {
-        final params = <String, String>{
-          'title': a.title.trim(),
-          if (a.artist.trim().isNotEmpty) 'artist': a.artist.trim(),
-          if (duration != null) 'duration': duration,
-        };
-        final data = await _getJson(
-          Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: params),
-          timeout: const Duration(seconds: 5),
-          retries: 1,
-        );
-        if (data is! Map || data['success'] != true) continue;
-        final raw = data['lines'];
-        if (raw is! List || raw.isEmpty) continue;
-        final wantSynced = data['synced'] == true;
-        final out = <LyricLine>[];
-        for (final e in raw) {
-          if (e is! Map) continue;
-          final text = (e['text'] ?? '').toString().trim();
-          if (text.isEmpty) continue;
-          final tSec = e['t'];
-          final endSec = e['end'];
-          out.add(LyricLine(
-            startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
-            endMs: endSec is num ? endSec.toDouble() * 1000 : null,
-            text: text,
-          ));
-        }
-        if (out.isEmpty) continue;
-        final synced = wantSynced && out.every((l) => l.startMs >= 0);
-        final result = LyricsResult(out, synced);
-        if (synced) return result; // prioritas synced
-        best ??= result;
-      } catch (_) {}
-    }
-    if (best != null) return best;
-
-    // Fallback langsung ke LRCLIB. Endpoint backend lama kadang belum
-    // meneruskan /api/lyrics, sehingga player selalu menampilkan keadaan kosong.
+  Future<LyricsResult?> _lyricsFromBackend(_LyricCand c, int? duration) async {
     try {
-      final uri = Uri.https('lrclib.net', '/api/search', {
-        'track_name': title0.isNotEmpty ? title0 : t.title,
-        if (artist0.isNotEmpty) 'artist_name': artist0,
-        if (duration != null) 'duration': duration,
-      });
-      final response = await _http.get(uri, headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'SoundXs/1.1 (Android; lyrics lookup)',
-      }).timeout(const Duration(seconds: 8));
-      if (response.statusCode == 200) {
-        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-        if (decoded is List) {
-          // Pilih kecocokan judul/artis terdekat, bukan hasil acak pertama.
-          final wantedTitle = title0.toLowerCase();
-          final wantedArtist = artist0.toLowerCase();
-          final candidates = decoded.whereType<Map>().toList()
-            ..sort((a, b) {
-              int score(Map item) {
-                final title = (item['trackName'] ?? '').toString().toLowerCase();
-                final artist = (item['artistName'] ?? '').toString().toLowerCase();
-                return (title == wantedTitle ? 4 : title.contains(wantedTitle) || wantedTitle.contains(title) ? 2 : 0) +
-                    (wantedArtist.isNotEmpty && artist == wantedArtist ? 3 : 0) +
-                    (item['syncedLyrics'] is String && (item['syncedLyrics'] as String).isNotEmpty ? 1 : 0);
-              }
-              return score(b).compareTo(score(a));
-            });
-          for (final item in candidates) {
-            final syncedRaw = item['syncedLyrics'];
-            final plainRaw = item['plainLyrics'];
-            final rawLyrics = syncedRaw is String && syncedRaw.trim().isNotEmpty
-                ? syncedRaw
-                : (plainRaw is String ? plainRaw : '');
-            if (rawLyrics.trim().isEmpty) continue;
-            final lines = <LyricLine>[];
-            final lrcPattern = RegExp(r'^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$');
-            for (final rawLine in rawLyrics.split(RegExp(r'\r?\n'))) {
-              final match = lrcPattern.firstMatch(rawLine.trim());
-              if (match != null) {
-                final fraction = (match.group(3) ?? '0').padRight(3, '0').substring(0, 3);
-                final ms = (int.parse(match.group(1)!) * 60 + int.parse(match.group(2)!)) * 1000 + int.parse(fraction);
-                final text = (match.group(4) ?? '').trim();
-                if (text.isNotEmpty) lines.add(LyricLine(startMs: ms.toDouble(), text: text));
-              } else if (syncedRaw is! String || syncedRaw.trim().isEmpty) {
-                final text = rawLine.trim();
-                if (text.isNotEmpty) lines.add(LyricLine(startMs: -1, text: text));
-              }
-            }
-            if (lines.isNotEmpty) {
-              lines.sort((a, b) => a.startMs.compareTo(b.startMs));
-              return LyricsResult(lines, lines.every((line) => line.startMs >= 0));
-            }
-          }
+      final data = await _getJson(
+        Uri.parse('${ApiConfig.baseUrl}$_api/lyrics').replace(queryParameters: {
+          'title': c.title,
+          if (c.artist.isNotEmpty) 'artist': c.artist,
+          if (duration != null) 'duration': '$duration',
+        }),
+        timeout: const Duration(seconds: 6),
+        retries: 1,
+      );
+      if (data is! Map || data['success'] != true) return null;
+      final raw = data['lines'];
+      if (raw is! List || raw.isEmpty) return null;
+      final wantSynced = data['synced'] == true;
+      final out = <LyricLine>[];
+      for (final e in raw) {
+        if (e is! Map) continue;
+        final text = (e['text'] ?? '').toString().trim();
+        if (text.isEmpty) continue;
+        final tSec = e['t'];
+        final endSec = e['end'];
+        out.add(LyricLine(
+          startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
+          endMs: endSec is num ? endSec.toDouble() * 1000 : null,
+          text: text,
+        ));
+      }
+      if (out.isEmpty) return null;
+      return LyricsResult(out, wantSynced && out.every((l) => l.startMs >= 0));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _lrclibGet(Uri uri) async {
+    final res = await _http.get(uri, headers: _lrclibHeaders).timeout(const Duration(seconds: 7));
+    if (res.statusCode != 200) return null;
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+    return decoded is Map<String, dynamic> ? decoded : null;
+  }
+
+  static const _lrclibHeaders = {
+    'Accept': 'application/json',
+    'User-Agent': 'SoundXs/1.1 (Android; lyrics lookup)',
+  };
+
+  int _lrcScore(Map item, _LyricCand c) {
+    final title = (item['trackName'] ?? item['name'] ?? '').toString().toLowerCase();
+    final artist = (item['artistName'] ?? '').toString().toLowerCase();
+    final wt = c.title.toLowerCase();
+    final wa = c.artist.toLowerCase();
+    var s = 0;
+    if (title.isNotEmpty) {
+      if (title == wt) {
+        s += 4;
+      } else if (title.contains(wt) || wt.contains(title)) {
+        s += 2;
+      }
+    }
+    if (wa.isNotEmpty && artist == wa) s += 3;
+    final synced = item['syncedLyrics'];
+    if (synced is String && synced.isNotEmpty) s += 1;
+    return s;
+  }
+
+  LyricsResult? _parseLrcRecord(Map item) {
+    final synced = item['syncedLyrics'];
+    final plain = item['plainLyrics'];
+    final isSynced = synced is String && synced.trim().isNotEmpty;
+    final raw = isSynced ? synced : (plain is String ? plain : '');
+    if (raw.trim().isEmpty) return null;
+
+    final lines = <LyricLine>[];
+    for (final rawLine in raw.split(RegExp(r'\r?\n'))) {
+      final m = _lrcLine.firstMatch(rawLine.trim());
+      if (m != null) {
+        final fraction = (m.group(3) ?? '0').padRight(3, '0').substring(0, 3);
+        final ms = (int.parse(m.group(1)!) * 60 + int.parse(m.group(2)!)) * 1000 + int.parse(fraction);
+        final text = (m.group(4) ?? '').trim();
+        if (text.isNotEmpty) lines.add(LyricLine(startMs: ms.toDouble(), text: text));
+      } else if (!isSynced) {
+        final text = rawLine.trim();
+        if (text.isNotEmpty) lines.add(LyricLine(startMs: -1, text: text));
+      }
+    }
+    if (lines.isEmpty) return null;
+    if (isSynced) {
+      lines.sort((a, b) => a.startMs.compareTo(b.startMs));
+      return LyricsResult(lines, lines.every((l) => l.startMs >= 0));
+    }
+    return LyricsResult(lines, false);
+  }
+
+  Future<LyricsResult?> _lyricsFromLrclib(_LyricCand c, int? duration) async {
+    try {
+      // 1) Pencocokan tepat (judul + artis + durasi) paling akurat.
+      if (c.artist.isNotEmpty && duration != null) {
+        final exact = await _lrclibGet(Uri.https('lrclib.net', '/api/get', {
+          'track_name': c.title,
+          'artist_name': c.artist,
+          'duration': '$duration',
+        }));
+        if (exact != null) {
+          final r = _parseLrcRecord(exact);
+          if (r != null) return r;
         }
       }
+      // 2) Pencarian longgar, pilih kecocokan terdekat.
+      final res = await _http
+          .get(
+            Uri.https('lrclib.net', '/api/search', {
+              'track_name': c.title,
+              if (c.artist.isNotEmpty) 'artist_name': c.artist,
+            }),
+            headers: _lrclibHeaders,
+          )
+          .timeout(const Duration(seconds: 7));
+      if (res.statusCode != 200) return null;
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is! List) return null;
+      final items = decoded.whereType<Map>().toList()
+        ..sort((a, b) => _lrcScore(b, c).compareTo(_lrcScore(a, c)));
+      for (final item in items.take(5)) {
+        final r = _parseLrcRecord(item);
+        if (r != null) return r;
+      }
+      return null;
     } catch (_) {
-      // Jaga player tetap hidup bila layanan lirik pihak ketiga tidak tersedia.
+      return null;
     }
-    return const LyricsResult([], false);
+  }
+
+  /// Semua kandidat dicoba paralel (backend + LRCLIB). Lirik tersinkron didahulukan.
+  Future<LyricsResult> getLyrics(Track t) async {
+    final duration = t.durationMs > 0 ? (t.durationMs / 1000).round() : null;
+    final cands = _lyricCandidates(t);
+    final tasks = <Future<LyricsResult?>>[
+      for (final c in cands) _lyricsFromBackend(c, duration),
+      for (final c in cands) _lyricsFromLrclib(c, duration),
+    ];
+    final results = await Future.wait(tasks);
+
+    LyricsResult? best;
+    for (final r in results) {
+      if (r == null || r.isEmpty) continue;
+      if (r.synced) return r;
+      best ??= r;
+    }
+    return best ?? const LyricsResult([], false);
   }
 }
