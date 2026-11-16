@@ -91,23 +91,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _tracks = cached;
     });
     try {
-      // Timeout longgar + retry; cold start sering gagal karena client_id belum siap
-      Future<List<Track>> once() => _api.search(MOOD_QUERY[mood]!).timeout(
-            const Duration(seconds: 20),
-            onTimeout: () => throw ApiException('Server lambat, coba lagi.'),
-          );
-      List<Track> res;
-      try {
-        res = await once();
-      } catch (_) {
-        // Paksa refresh kredensial SoundCloud lalu coba lagi
-        try {
-          await _api.getCredentials(force: true);
-        } catch (_) {}
-        await Future<void>.delayed(const Duration(milliseconds: 800));
-        if (!mounted || id != _req) return;
-        res = await once();
-      }
+      // Jangan biarkan skeleton menggantung; cache lokal langsung ditampilkan bila tersedia.
+      final res = await _api.search(MOOD_QUERY[mood]!).timeout(
+        const Duration(seconds: 12),
+        onTimeout: () => throw ApiException('Server masih memuat. Coba lagi sebentar.'),
+      );
       if (!mounted || id != _req) return;
       final list = res.where((e) => e.kind == ItemKind.track).toList();
       if (list.isNotEmpty) _writeCache(mood, list);

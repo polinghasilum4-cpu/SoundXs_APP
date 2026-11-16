@@ -245,12 +245,43 @@ class _LibraryScreenState extends State<LibraryScreen> {
             onTap: () => widget.onPlay(t, list),
             trailing: _songFilter == 0
                 ? IconButton(
+                    tooltip: 'Hapus dari disukai',
                     icon: const Icon(Icons.favorite_rounded, color: C.mint, size: 20),
                     onPressed: () => store.toggleLike(t),
                   )
-                : null,
+                : _songFilter == 3
+                    ? IconButton(
+                        tooltip: 'Hapus unduhan offline',
+                        icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 21),
+                        onPressed: () => _deleteOffline(t),
+                      )
+                    : null,
           ),
       ],
+    );
+  }
+
+  Future<void> _deleteOffline(Track track) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Hapus unduhan?'),
+        content: Text('“${track.title}” akan dihapus dari penyimpanan offline.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Hapus')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final deleted = await store.removeOffline(track.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(deleted ? 'Unduhan dihapus' : 'File offline tidak dapat dihapus'),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 

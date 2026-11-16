@@ -47,7 +47,10 @@ class _TrackListScreenState extends State<TrackListScreen> {
       _error = null;
     });
     try {
-      final r = await widget.loader();
+      final r = await widget.loader().timeout(
+        const Duration(seconds: 12),
+        onTimeout: () => throw Exception('Daftar masih memuat. Ketuk coba lagi.'),
+      );
       if (!mounted) return;
       setState(() {
         _tracks = r;

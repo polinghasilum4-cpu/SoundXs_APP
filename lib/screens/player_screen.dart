@@ -18,6 +18,7 @@ import '../widgets/cover_image.dart';
 import '../widgets/liquid_glass.dart';
 import '../widgets/press_scale.dart';
 import '../widgets/synced_lyrics.dart';
+import 'track_list_screen.dart';
 
 /// Tampilan di area utama: Cover atau Lirik. Tab ketiga (Gaya) membuka sheet sendiri.
 enum _PlayerView { cover, lyrics }
@@ -46,6 +47,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   _PlayerView _view = _PlayerView.cover;
   String _lyricsId = '';
   Future<LyricsResult>? _lyrics;
+  bool _followLyrics = true;
+  bool _showIntervals = false;
   bool _downloading = false;
   double _dlProgress = 0;
 
@@ -85,7 +88,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _ensureLyrics(Track t) {
     if (_lyricsId == t.id && _lyrics != null) return;
     _lyricsId = t.id;
-    _lyrics = _api.getLyrics(t).catchError((_) => const LyricsResult([], false));
+    final override = store.lyricsOverride(t.id);
+    _lyrics = override == null
+        ? _api.getLyrics(t).catchError((_) => const LyricsResult([], false))
+        : Future.value(_plainLyrics(override));
   }
 
   void _setView(_PlayerView v) {
@@ -172,11 +178,377 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.more_horiz_rounded, color: Colors.white70),
-            onPressed: _showQueue,
+            icon: const Icon(Icons.more_vert_rounded, color: Colors.white70),
+            onPressed: () {
+              final t = audioHandler.current.value;
+              if (t != null) _showContextMenu(t);
+            },
           ),
         ],
       );
+
+  void _showContextMenu(Track t) {
+    if (_view == _PlayerView.lyrics) {
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: C.surface,
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, sheetSetState) => SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.88),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        _lyricsAction(Icons.edit_rounded, 'Ubah', () {
+                          Navigator.pop(ctx);
+                          _editLyrics(t);
+                        }),
+                        _lyricsAction(Icons.refresh_rounded, 'Muat ulang', () {
+                          Navigator.pop(ctx);
+                          store.setLyricsOverride(t.id, null);
+                          _refreshLyrics(t);
+                        }),
+                        _lyricsAction(Icons.search_rounded, 'Cari', () {
+                          Navigator.pop(ctx);
+                          _searchLyrics(t);
+                        }),
+                        _lyricsAction(Icons.copy_rounded, 'Salin', () {
+                          Navigator.pop(ctx);
+                          _copyLyrics(t);
+                        }),
+                      ],
+                    ),
+                    const Divider(height: 24),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.translate_rounded, color: Colors.white70),
+                      title: const Text('Terjemahan lirik AI'),
+                      subtitle: const Text('Belum tersedia di API SoundXs'),
+                      trailing: const Switch(value: false, onChanged: null),
+                    ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      secondary: const Icon(Icons.subtitles_rounded, color: Colors.white70),
+                      title: const Text('Ikuti posisi lirik'),
+                      subtitle: const Text('Gulir otomatis mengikuti lagu'),
+                      value: _followLyrics,
+                      onChanged: (value) {
+                        setState(() => _followLyrics = value);
+                        sheetSetState(() {});
+                      },
+                    ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      secondary: const Icon(Icons.more_horiz_rounded, color: Colors.white70),
+                      title: const Text('Tampilkan indikator interval'),
+                      subtitle: const Text('Tandai jeda panjang antarbaris lirik'),
+                      value: _showIntervals,
+                      onChanged: (value) {
+                        setState(() => _showIntervals = value);
+                        sheetSetState(() {});
+                      },
+                    ),
+                    const Divider(height: 20),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.source_rounded, color: Colors.white70),
+                      title: const Text('Sumber lirik'),
+                      trailing: const Text('SoundXs', style: TextStyle(color: C.dim)),
+                    ),
+                    FutureBuilder<LyricsResult>(
+                      future: _lyrics,
+                      builder: (_, snap) => ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.schedule_rounded, color: Colors.white70),
+                        title: const Text('Waktu lirik'),
+                        trailing: Text(
+                          snap.data?.synced == true ? 'Tersinkron' : 'Tidak disinkron',
+                          style: const TextStyle(color: C.dim),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: C.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: CoverImage(url: t.coverUrl, size: 44, radius: 8),
+              title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.share_rounded),
+              title: const Text('Salin tautan lagu'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _copyLink(t);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_search_rounded),
+              title: const Text('Lihat artis'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openArtist(t);
+              },
+            ),
+            if (t.albumTitle.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.album_rounded),
+                title: const Text('Lihat album'),
+                subtitle: Text(t.albumTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openAlbum(t);
+                },
+              ),
+            ListTile(
+              leading: Icon(store.isLiked(t.id) ? Icons.library_add_check_rounded : Icons.library_add_rounded),
+              title: Text(store.isLiked(t.id) ? 'Hapus dari pustaka' : 'Tambah ke pustaka'),
+              onTap: () {
+                store.toggleLike(t);
+                Navigator.pop(ctx);
+              },
+            ),
+            if (store.isOffline(t.id))
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded),
+                title: const Text('Hapus unduhan'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _removeOffline(t);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _lyricsAction(IconData icon, String label, VoidCallback onTap) => Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              height: 78,
+              decoration: BoxDecoration(color: op(Colors.white, 0.06), borderRadius: BorderRadius.circular(16)),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, color: Colors.white70, size: 23),
+                  const SizedBox(height: 7),
+                  Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+  LyricsResult _plainLyrics(String raw) {
+    final lines = raw
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .map((line) => LyricLine(startMs: -1, text: line))
+        .toList();
+    return LyricsResult(lines, false);
+  }
+
+  Future<void> _editLyrics(Track t) async {
+    final existing = store.lyricsOverride(t.id);
+    final current = existing ?? (await (_lyrics ?? _api.getLyrics(t))).lines.map((e) => e.text).join('\n');
+    if (!mounted) return;
+    final controller = TextEditingController(text: current);
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Ubah lirik'),
+        content: SizedBox(
+          width: 480,
+          child: TextField(
+            controller: controller,
+            minLines: 8,
+            maxLines: 14,
+            keyboardType: TextInputType.multiline,
+            style: const TextStyle(color: Colors.white, height: 1.35),
+            decoration: const InputDecoration(hintText: 'Satu baris lirik per baris'),
+          ),
+        ),
+        actions: [
+          if (existing != null)
+            TextButton(onPressed: () => Navigator.pop(ctx, 'reset'), child: const Text('Pulihkan dari API')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Simpan')),
+        ],
+      ),
+    );
+    if (action == null || !mounted) {
+      controller.dispose();
+      return;
+    }
+    if (action == 'reset') {
+      store.setLyricsOverride(t.id, null);
+      _refreshLyrics(t);
+    } else {
+      store.setLyricsOverride(t.id, controller.text);
+      setState(() {
+        _lyricsId = t.id;
+        _lyrics = Future.value(_plainLyrics(controller.text));
+      });
+    }
+    controller.dispose();
+  }
+
+  Future<void> _searchLyrics(Track t) async {
+    final title = TextEditingController(text: ApiService.cleanTitle(t.title));
+    final artist = TextEditingController(text: t.artist);
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Cari lirik di SoundXs'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: title, decoration: const InputDecoration(labelText: 'Judul lagu')),
+            TextField(controller: artist, decoration: const InputDecoration(labelText: 'Artis')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cari')),
+        ],
+      ),
+    );
+    if (go == true && title.text.trim().isNotEmpty && mounted) {
+      final query = Track(
+        id: t.id,
+        title: title.text.trim(),
+        artist: artist.text.trim(),
+        coverUrl: t.coverUrl,
+        durationMs: t.durationMs,
+      );
+      final lookup = _api.getLyrics(query);
+      setState(() {
+        _lyricsId = t.id;
+        _lyrics = lookup;
+      });
+      try {
+        final result = await lookup;
+        if (!mounted) {
+          title.dispose();
+          artist.dispose();
+          return;
+        }
+        if (result.isEmpty) _snack('Lirik tidak ditemukan di SoundXs');
+      } catch (_) {
+        if (mounted) _snack('Pencarian lirik SoundXs gagal. Coba lagi.');
+      }
+    }
+    title.dispose();
+    artist.dispose();
+  }
+
+  void _openArtist(Track t) {
+    final artist = Track(
+      id: t.artistId,
+      title: t.artist,
+      artist: t.artist,
+      coverUrl: t.coverUrl,
+      kind: ItemKind.user,
+    );
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => TrackListScreen(
+        title: t.artist,
+        subtitle: 'Artis',
+        coverUrl: t.coverUrl,
+        loader: () => _api.getArtistTracks(artist),
+        onPlay: (track, queue) {
+          final index = queue.indexOf(track);
+          audioHandler.setQueue(queue, index < 0 ? 0 : index);
+        },
+      ),
+    ));
+  }
+
+  void _openAlbum(Track t) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => TrackListScreen(
+        title: t.albumTitle,
+        subtitle: t.artist,
+        coverUrl: t.coverUrl,
+        loader: () => _api.getAlbumTracks(t),
+        onPlay: (track, queue) {
+          final index = queue.indexOf(track);
+          audioHandler.setQueue(queue, index < 0 ? 0 : index);
+        },
+      ),
+    ));
+  }
+
+  Future<void> _copyLyrics(Track t) async {
+    final future = _lyrics;
+    final result = future == null ? await _api.getLyrics(t) : await future;
+    if (!mounted) return;
+    if (result.isEmpty) {
+      _snack('Lirik tidak tersedia untuk disalin');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: result.lines.map((line) => line.text).join('\n')));
+    _snack('Lirik disalin');
+  }
+
+  void _refreshLyrics(Track t) {
+    setState(() {
+      _lyricsId = '';
+      _lyrics = null;
+      _ensureLyrics(t);
+    });
+  }
+
+  Future<void> _removeOffline(Track t) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Hapus unduhan?'),
+        content: Text('“${t.title}” akan dihapus dari penyimpanan offline.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Hapus')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final deleted = await store.removeOffline(t.id);
+    _snack(deleted ? 'Unduhan dihapus' : 'File offline tidak dapat dihapus');
+  }
 
   /// Segmen Cover | Lirik | Gaya, sama dengan tab di web.
   Widget _segmented() {
@@ -287,7 +659,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
           final r = snap.data;
           if (r == null || r.isEmpty) {
-            return const Center(child: Text('Lirik tidak tersedia', style: TextStyle(color: C.dim)));
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Lirik tidak tersedia', style: TextStyle(color: C.dim)),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: () => _refreshLyrics(t),
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Coba lagi'),
+                  ),
+                ],
+              ),
+            );
           }
           return SyncedLyrics(
             key: ValueKey('lyrics_${t.id}'),
@@ -296,6 +681,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             current: audioHandler.player.position,
             position: audioHandler.player.positionStream,
             onSeek: (d) => audioHandler.seek(d),
+            followPosition: _followLyrics,
+            showIntervals: _showIntervals,
           );
         },
       ),
@@ -539,7 +926,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 _actionBtn(
                   offline ? Icons.download_done_rounded : Icons.download_rounded,
                   offline ? 'Tersimpan' : (_downloading ? '${(_dlProgress * 100).round()}%' : 'Unduh'),
-                  offline || _downloading ? null : () => _downloadOffline(t),
+                  _downloading ? null : (offline ? () => _removeOffline(t) : () => _downloadOffline(t)),
                   active: offline || _downloading,
                 ),
                 _actionBtn(Icons.share_rounded, 'Bagikan', () => _copyLink(t)),
@@ -604,29 +991,53 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _dlProgress = 0;
     });
     try {
-      final src = await _resolveForDownload(t);
-      final proxyUrl = await _api.proxiedStream(src);
-      if (proxyUrl.isEmpty) throw Exception('URL stream kosong');
-
-      final resp = await _dlGet(proxyUrl, sec: 60);
-      if (resp.statusCode < 200 || resp.statusCode >= 400) {
-        throw Exception('server stream error (${resp.statusCode})');
+      var src = await _resolveForDownload(t);
+      Uint8List bytes = Uint8List(0);
+      var outExt = 'm4a';
+      Object? lastError;
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          final proxyUrl = await _api.proxiedStream(src);
+          if (proxyUrl.isEmpty) throw Exception('URL stream kosong');
+          final resp = await _dlGet(proxyUrl, sec: 60);
+          if (resp.statusCode < 200 || resp.statusCode >= 400) {
+            throw Exception('server stream error (${resp.statusCode})');
+          }
+          final ctype = (resp.headers['content-type'] ?? '').toLowerCase();
+          final head = String.fromCharCodes(resp.bodyBytes.take(64)).trimLeft();
+          if (ctype.contains('text/html') || ctype.contains('application/json') || head.startsWith('{')) {
+            throw Exception('server tidak mengirim file audio');
+          }
+          final isM3u = head.startsWith('#EXT') || ctype.contains('mpegurl');
+          bytes = isM3u ? await _downloadHls(resp, proxyUrl) : resp.bodyBytes;
+          outExt = (!isM3u && (ctype.contains('mpeg') || ctype.contains('mp3'))) ? 'mp3' : 'm4a';
+          if (bytes.length < 30 * 1024) {
+            throw Exception('file terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
+          }
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+          final message = e.toString().toLowerCase();
+          if (attempt == 0 && !message.contains('enkripsi') && !message.contains('playlist hls kosong')) {
+            final fresh = await _api.refresh(src).timeout(
+              const Duration(seconds: 12),
+              onTimeout: () => null,
+            );
+            if (fresh != null && fresh.hasStream && fresh.id == src.id) {
+              src = fresh;
+              continue;
+            }
+          }
+          break;
+        }
       }
-      final ctype = (resp.headers['content-type'] ?? '').toLowerCase();
-      final head = String.fromCharCodes(resp.bodyBytes.take(16));
-      final isM3u = head.trimLeft().startsWith('#EXT') || ctype.contains('mpegurl');
-
-      final Uint8List bytes = isM3u ? await _downloadHls(resp, proxyUrl) : resp.bodyBytes;
-      final outExt = (!isM3u && (ctype.contains('mpeg') || ctype.contains('mp3'))) ? 'mp3' : 'm4a';
-
-      if (bytes.length < 30 * 1024) {
-        throw Exception('file terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
-      }
+      if (lastError != null) throw lastError!;
 
       final docs = await getApplicationDocumentsDirectory();
       final dir = Directory('${docs.path}/soundxs_offline');
       if (!await dir.exists()) await dir.create(recursive: true);
-      final safeId = src.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final safeId = t.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
       final file = File('${dir.path}/$safeId.$outExt');
       final tempFile = File('${file.path}.part');
       try {
@@ -638,7 +1049,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         rethrow;
       }
 
-      store.markOffline(src, file.path);
+      store.markOffline(t, file.path);
       _snack('Lagu disimpan offline (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)');
     } on TimeoutException {
       _snack('Gagal mengunduh: koneksi lambat, coba lagi');

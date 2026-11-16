@@ -72,13 +72,22 @@ class _SearchScreenState extends State<SearchScreen> {
       final List<Track> res;
       switch (_tab) {
         case 'playlists':
-          res = await _api.searchPlaylists(_q);
+          res = await _api.searchPlaylists(_q).timeout(
+            const Duration(seconds: 12),
+            onTimeout: () => throw ApiException('Pencarian masih memuat. Coba lagi sebentar.'),
+          );
           break;
         case 'users':
-          res = await _api.searchArtists(_q);
+          res = await _api.searchArtists(_q).timeout(
+            const Duration(seconds: 12),
+            onTimeout: () => throw ApiException('Pencarian artis masih memuat. Coba lagi sebentar.'),
+          );
           break;
         default:
-          res = await _api.search(_q);
+          res = await _api.search(_q).timeout(
+            const Duration(seconds: 12),
+            onTimeout: () => throw ApiException('Pencarian masih memuat. Coba lagi sebentar.'),
+          );
       }
       if (!mounted || id != _req) return;
       setState(() {
