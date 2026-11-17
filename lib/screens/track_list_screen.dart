@@ -16,6 +16,7 @@ class TrackListScreen extends StatefulWidget {
     required this.coverUrl,
     required this.loader,
     required this.onPlay,
+    this.initialTracks = const [],
     this.playlist,
   });
 
@@ -24,6 +25,7 @@ class TrackListScreen extends StatefulWidget {
   final String coverUrl;
   final Future<List<Track>> Function() loader;
   final void Function(Track, List<Track>) onPlay;
+  final List<Track> initialTracks;
   final Track? playlist; // kalau diisi, tombol simpan playlist muncul
 
   @override
@@ -34,14 +36,17 @@ class _TrackListScreenState extends State<TrackListScreen> {
   List<Track> _tracks = [];
   bool _loading = true;
   String? _error;
+  int _loadToken = 0;
 
   @override
   void initState() {
     super.initState();
+    _tracks = List<Track>.from(widget.initialTracks);
     _load();
   }
 
   Future<void> _load() async {
+    final token = ++_loadToken;
     setState(() {
       _loading = true;
       _error = null;
@@ -51,13 +56,13 @@ class _TrackListScreenState extends State<TrackListScreen> {
         const Duration(seconds: 12),
         onTimeout: () => throw Exception('Daftar masih memuat. Ketuk coba lagi.'),
       );
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       setState(() {
         _tracks = r;
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -129,9 +134,27 @@ class _TrackListScreenState extends State<TrackListScreen> {
                   ]),
                 ),
               ),
-              if (_loading) const SliverToBoxAdapter(child: ShimmerList(count: 6)),
-              if (_error != null)
+              if (_loading && _tracks.isEmpty) const SliverToBoxAdapter(child: ShimmerList(count: 6)),
+              if (_loading && _tracks.isNotEmpty)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+                    child: Text('Memuat lagu lainnya…', style: TextStyle(color: C.dim, fontSize: 12)),
+                  ),
+                ),
+              if (_error != null && _tracks.isEmpty)
                 SliverToBoxAdapter(child: ErrorRetry(message: _error!, onRetry: _load)),
+              if (_error != null && _tracks.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh_rounded, size: 17),
+                      label: const Text('Gagal memuat lagu lain · Coba lagi'),
+                    ),
+                  ),
+                ),
               if (!_loading && _error == null && _tracks.isEmpty)
                 const SliverToBoxAdapter(
                   child: Padding(

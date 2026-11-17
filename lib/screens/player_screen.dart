@@ -493,6 +493,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           final index = queue.indexOf(track);
           audioHandler.setQueue(queue, index < 0 ? 0 : index);
         },
+        initialTracks: [t],
       ),
     ));
   }
@@ -508,6 +509,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           final index = queue.indexOf(track);
           audioHandler.setQueue(queue, index < 0 ? 0 : index);
         },
+        initialTracks: [t],
       ),
     ));
   }
@@ -661,10 +663,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
           if (r == null || r.isEmpty) {
             return Center(
               child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('Lirik tidak tersedia', style: TextStyle(color: C.dim)),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                  const Text('Lirik belum ditemukan', style: TextStyle(color: C.dim)),
                   const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: () => _searchLyrics(t),
+                    icon: const Icon(Icons.search_rounded),
+                    label: const Text('Cari judul atau artis'),
+                  ),
                   TextButton.icon(
                     onPressed: () => _refreshLyrics(t),
                     icon: const Icon(Icons.refresh_rounded),

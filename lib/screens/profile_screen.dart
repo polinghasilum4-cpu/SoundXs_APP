@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../core/perf.dart';
 import '../globals.dart';
 import '../theme/app_theme.dart';
@@ -56,6 +57,65 @@ class ProfileScreen extends StatelessWidget {
       }
     }
     store.setIsland(on: true);
+  }
+
+  Future<void> _manageNotificationPermission(BuildContext context) async {
+    if (!_isAndroid) return;
+    var status = await Permission.notification.status;
+    if (status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Izin notifikasi aktif. Kontrol pemutaran dapat tampil di panel notifikasi.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!context.mounted) return;
+
+    final openSettings = status.isPermanentlyDenied;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: const Text('Izin notifikasi SoundXs'),
+        content: const Text(
+          'Izin ini menampilkan kontrol lagu di panel notifikasi dan layar kunci. '
+          'SoundXs tidak mengirim notifikasi promosi.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Nanti')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(openSettings ? 'Buka pengaturan' : 'Lanjutkan'),
+          ),
+        ],
+      ),
+    );
+    if (proceed != true || !context.mounted) return;
+
+    if (openSettings) {
+      await openAppSettings();
+      return;
+    }
+    status = await Permission.notification.request();
+    if (!context.mounted) return;
+    if (status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Izin notifikasi aktif.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (status.isPermanentlyDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Notifikasi diblokir. Ketuk pengaturan izin untuk mengaktifkannya.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Izin belum aktif. Kontrol lagu tidak akan tampil di panel notifikasi.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   @override
@@ -148,6 +208,22 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ],
               ]),
+
+              if (_isAndroid) ...[
+                _header('Notifikasi'),
+                _card([
+                  ListTile(
+                    leading: const Icon(Icons.notifications_active_rounded, color: C.mint),
+                    title: const Text('Kontrol di panel notifikasi', style: TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: const Text(
+                      'Izin bisa diminta lagi di sini atau dibuka melalui Pengaturan aplikasi.',
+                      style: TextStyle(color: C.dim, fontSize: 12),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded, color: C.dim),
+                    onTap: () => _manageNotificationPermission(context),
+                  ),
+                ]),
+              ],
 
               _header('Performa'),
               _card([

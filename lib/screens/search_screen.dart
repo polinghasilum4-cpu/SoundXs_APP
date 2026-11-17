@@ -94,6 +94,11 @@ class _SearchScreenState extends State<SearchScreen> {
         _results = res;
         _loading = false;
       });
+      if (res.isNotEmpty && (_tab == 'playlists' || _tab == 'users')) {
+        for (final item in res.take(2)) {
+          unawaited(_api.prefetchTrackList(item));
+        }
+      }
     } catch (e) {
       if (!mounted || id != _req) return;
       setState(() {
@@ -110,6 +115,14 @@ class _SearchScreenState extends State<SearchScreen> {
     }
     _focus.unfocus();
     final isPl = t.kind == ItemKind.playlist;
+    final initialTracks = <Track>[];
+    if (!isPl) {
+      for (final known in [...store.recent, ...store.liked]) {
+        final sameArtist = known.artistId == t.id ||
+            known.artist.trim().toLowerCase() == t.title.trim().toLowerCase();
+        if (sameArtist && !initialTracks.any((e) => e.id == known.id)) initialTracks.add(known);
+      }
+    }
     Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => TrackListScreen(
         title: t.title,
@@ -117,6 +130,7 @@ class _SearchScreenState extends State<SearchScreen> {
         coverUrl: t.coverUrl,
         loader: isPl ? () => _api.getPlaylistTracks(t.id) : () => _api.getArtistTracks(t),
         onPlay: widget.onPlay,
+        initialTracks: initialTracks,
         playlist: isPl ? t : null,
       ),
     ));
