@@ -50,6 +50,35 @@ class Track {
     return '';
   }
 
+  static bool _isPlaceholderTitle(String value) {
+    final normalized = value.trim().toLowerCase();
+    return normalized.isEmpty ||
+        const {'no title', 'untitled', 'null', 'undefined', 'unknown'}.contains(normalized);
+  }
+
+  static String? _titleFromPermalink(String raw) {
+    try {
+      final uri = Uri.tryParse(raw.trim());
+      if (uri == null || uri.scheme != 'https' || uri.userInfo.isNotEmpty) return null;
+      final host = uri.host.toLowerCase();
+      final trustedHost = host == 'soundcloud.com' ||
+          host.endsWith('.soundcloud.com') ||
+          host == 'soundxs.web.id';
+      if (!trustedHost) return null;
+      final segments = uri.pathSegments.where((segment) => segment.isNotEmpty).toList();
+      if (segments.isEmpty) return null;
+      final slug = segments.last.trim();
+      if (slug.length < 2 || RegExp(r'^\d+$').hasMatch(slug)) return null;
+      final title = slug.replaceAll(RegExp(r'[-_]+'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (_isPlaceholderTitle(title) || const {'tracks', 'sets', 'stream'}.contains(title.toLowerCase())) {
+        return null;
+      }
+      return title;
+    } catch (_) {
+      return null;
+    }
+  }
+
   factory Track.fromJson(Map<String, dynamic> json, {ItemKind? kind}) {
     final userRaw = json['user'];
     final user = userRaw is Map ? Map<String, dynamic>.from(userRaw) : <String, dynamic>{};
@@ -78,7 +107,18 @@ class Track {
       }
     }
 
-    final title = _pick([json['title'], json['name'], json['username']]);
+    final permalink = _s(json['permalink_url']);
+    var title = '';
+    for (final candidate in [json['title'], json['name'], json['username']]) {
+      final value = _s(candidate).trim();
+      if (!_isPlaceholderTitle(value) && value != 'null') {
+        title = value;
+        break;
+      }
+    }
+    if (_isPlaceholderTitle(title)) {
+      title = _titleFromPermalink(permalink) ?? '';
+    }
     var artist = _pick([user['username'], json['artist'], json['author'], json['channel']]);
     if (artist.isEmpty) artist = k == ItemKind.user ? 'Artis' : 'Unknown';
 
@@ -90,7 +130,7 @@ class Track {
       coverUrl: artwork,
       streamUrl: _pick([json['stream_url'], json['audio'], json['audioUrl'], json['url']]),
       durationMs: _i(json['duration']),
-      permalinkUrl: _s(json['permalink_url']),
+      permalinkUrl: permalink,
       category: _pick([json['category']]).isEmpty ? 'Semua' : _s(json['category']),
       albumTitle: _pick([
         json['album_title'],
