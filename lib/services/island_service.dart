@@ -104,6 +104,16 @@ class IslandService with WidgetsBindingObserver {
     if (!bg && !fg) return; // inactive = transisi singkat, abaikan
     _background = bg;
     _sync();
+    if (fg && _isAndroid) unawaited(_refreshOverlayPermissionOnResume());
+  }
+
+  Future<void> _refreshOverlayPermissionOnResume() async {
+    final granted = await hasPermission();
+    if (!granted) {
+      _overlayOn = false;
+      return;
+    }
+    if (store.islandOn) _sync(force: true);
   }
 
   void _onSettings() => _sync(force: true);

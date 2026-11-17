@@ -19,6 +19,10 @@ const kSoundLabels = {
   'bass': 'Bass Boost',
 };
 
+const _sourceLoadTimeout = Duration(seconds: 15);
+const _streamResolveTimeout = Duration(seconds: 15);
+const _refreshTimeout = Duration(seconds: 18);
+
 class SoundXsAudioHandler extends BaseAudioHandler {
   SoundXsAudioHandler._(this._player, this._eq) {
     shuffleOn.addListener(refreshControls);
@@ -209,6 +213,21 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     return f;
   }
 
+  Future<void> _boundedSourceLoad(Future<dynamic> pending, int token) async {
+    try {
+      await pending.timeout(_sourceLoadTimeout);
+    } on TimeoutException {
+      // Stop the native load before starting a fresh source; otherwise a stalled
+      // just_audio setup can leave the player occupied after the UI has failed.
+      if (token == _token) {
+        try {
+          await _player.stop().timeout(const Duration(seconds: 3));
+        } catch (_) {}
+      }
+      throw TimeoutException('Sumber audio tidak merespons.');
+    }
+  }
+
   Future<void> _playPos(int p) async {
     if (p < 0 || p >= _order.length) return;
     _pos = p;
@@ -224,7 +243,7 @@ class SoundXsAudioHandler extends BaseAudioHandler {
         try {
           final f = File(local);
           if (await f.exists()) {
-            await _player.setFilePath(local);
+            await _boundedSourceLoad(_player.setFilePath(local), token);
             if (token != _token) return;
             await _applyStyle();
             unawaited(_player.play());
@@ -234,12 +253,13 @@ class SoundXsAudioHandler extends BaseAudioHandler {
           }
         } catch (_) {}
       }
-      final url = await _api.proxiedStream(src);
+      final url = await _api.proxiedStream(src).timeout(_streamResolveTimeout);
       if (url.isEmpty) throw StateError('stream kosong');
+      if (token != _token) return;
       if (src.streamType == 'hls') {
-        await _player.setAudioSource(HlsAudioSource(Uri.parse(url)));
+        await _boundedSourceLoad(_player.setAudioSource(HlsAudioSource(Uri.parse(url))), token);
       } else {
-        await _player.setUrl(url);
+        await _boundedSourceLoad(_player.setUrl(url), token);
       }
       if (token != _token) return;
       await _applyStyle();
@@ -251,12 +271,12 @@ class SoundXsAudioHandler extends BaseAudioHandler {
     try {
       final localPath = store.offlinePath(t.id);
       final hasLocalFile = localPath != null && await File(localPath).exists();
-      await start(hasLocalFile || t.hasStream ? t : await _fresh(t));
+      await start(hasLocalFile || t.hasStream ? t : await _fresh(t).timeout(_refreshTimeout));
     } catch (_) {
       if (token != _token) return;
       try {
         // data stream lama bisa kedaluwarsa -> ambil yang baru
-        final fresh = await _fresh(t);
+        final fresh = await _fresh(t).timeout(_refreshTimeout);
         if (token != _token) return;
         await start(fresh);
       } catch (_) {
@@ -266,7 +286,9 @@ class SoundXsAudioHandler extends BaseAudioHandler {
         if (_failStreak < 3 && _pos + 1 < _order.length) {
           await _playPos(_pos + 1);
         } else {
-          await _player.stop();
+          try {
+            await _player.stop().timeout(const Duration(seconds: 3));
+          } catch (_) {}
         }
       }
     }

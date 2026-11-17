@@ -48,6 +48,7 @@ class ApiService {
   static const _timeout = Duration(seconds: 7);
   static const _ttl = Duration(minutes: 5);
   static const _diskTtl = Duration(minutes: 20);
+  static const _maxStale = Duration(days: 7);
 
   static const _credKey = 'sc_client_id';
   static const _credAtKey = 'sc_client_id_at';
@@ -60,7 +61,8 @@ class ApiService {
   static final _emoji = RegExp(r'[\u{10000}-\u{10FFFF}\u2600-\u27BF\uFE0F\u200D]', unicode: true);
   static final _brackets = RegExp(r'\([^)]*\)|\[[^\]]*\]');
   static final _noise = RegExp(
-    r'(?i)\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
+    r'\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
+    caseSensitive: false,
   );
   static final _year = RegExp(r'\b20[0-3][0-9]\b');
   static final _space = RegExp(r'\s+');
@@ -69,13 +71,21 @@ class ApiService {
   final http.Client _http = http.Client();
   final Map<String, _Cached> _cache = {};
   final Map<String, Future<List<Track>>> _inflight = {};
+  final Set<String> _revalidating = {};
   String? _clientId;
   Future<String>? _credFuture;
 
-  /// Dipanggil saat app start: client_id siap sebelum Beranda minta data.
+  /// Siapkan client_id; permintaan paralel berbagi future yang sama.
   Future<void> warmUp() async {
     try {
       await getCredentials();
+    } catch (_) {}
+  }
+
+  /// Mulai request Beranda saat startup; halaman nanti bergabung ke request/cache yang sama.
+  Future<void> primeHome() async {
+    try {
+      await search('Indonesian Pop Hits');
     } catch (_) {}
   }
 
@@ -181,7 +191,7 @@ class ApiService {
         final saved = jsonDecode(raw);
         if (saved is Map && saved['at'] is int && saved['items'] is List) {
           final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(saved['at'] as int));
-          if (age <= _diskTtl) {
+          if (age <= _maxStale) {
             final items = (saved['items'] as List)
                 .whereType<Map>()
                 .map((e) => Track.fromJson(Map<String, dynamic>.from(e), kind: kind))
@@ -189,6 +199,9 @@ class ApiService {
                 .toList();
             if (items.isNotEmpty) {
               _cache[key] = _Cached(items);
+              if (age > _diskTtl) {
+                unawaited(_revalidateSearch(key, prefsKey, params, kind));
+              }
               return items;
             }
           } else {
@@ -211,6 +224,31 @@ class ApiService {
       } catch (_) {}
     }
     return items;
+  }
+
+  /// Cache usang tetap ditampilkan; hasil terbaru ditulis diam-diam untuk kunjungan berikutnya.
+  Future<void> _revalidateSearch(
+    String key,
+    String prefsKey,
+    Map<String, String> params,
+    ItemKind kind,
+  ) async {
+    if (!_revalidating.add(key)) return;
+    try {
+      final items = await _fetchSearch(params, kind);
+      if (items.isEmpty) return;
+      _cache[key] = _Cached(items);
+      if (_cache.length > 40) _cache.remove(_cache.keys.first);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(prefsKey, jsonEncode({
+        'at': DateTime.now().millisecondsSinceEpoch,
+        'items': items.take(250).map((e) => e.toJson()).toList(),
+      }));
+    } catch (_) {
+      // Cache lama tetap digunakan saat jaringan tidak tersedia.
+    } finally {
+      _revalidating.remove(key);
+    }
   }
 
   /// Backend bisa membungkus daftar di collection/tracks/results/data. Ambil list-nya.
@@ -270,6 +308,18 @@ class ApiService {
       // Minta batas maksimum agar playlist tidak terpotong menjadi beberapa lagu.
       _requestSearch({'playlist_id': id, 'type': 'tracks', 'limit': '200'}, ItemKind.track);
 
+  Future<void> prefetchTrackList(Track item) async {
+    try {
+      if (item.kind == ItemKind.playlist) {
+        await getPlaylistTracks(item.id);
+      } else if (item.kind == ItemKind.user) {
+        await getArtistTracks(item);
+      }
+    } catch (_) {
+      // Pemuatan halaman tetap akan mencoba lagi saat item dibuka.
+    }
+  }
+
   Future<List<Track>> getAlbumTracks(Track track) async {
     final album = track.albumTitle.trim();
     if (album.isEmpty) return [track];
@@ -279,21 +329,11 @@ class ApiService {
     return matches.isEmpty ? results : matches;
   }
 
-  /// Lagu milik artis. Coba berdasarkan user_id dulu; kalau backend tidak mendukungnya,
-  /// jatuh ke pencarian nama artis dan menyaring lagu yang benar-benar dari artis itu.
+  /// Lagu milik artis. Endpoint SoundXs /search tidak menerima user_id; cari nama artis saja.
   Future<List<Track>> getArtistTracks(Track artist) async {
-    try {
-      if (artist.id.isEmpty) throw const FormatException('artist id unavailable');
-      final byId = await _requestSearch(
-        {'user_id': artist.id, 'type': 'tracks', 'limit': '200'},
-        ItemKind.track,
-      );
-      if (byId.isNotEmpty) return byId;
-    } catch (_) {}
     final name = artist.title.trim().toLowerCase();
     final byName = await search(artist.title);
-    final own = byName.where((e) => e.artist.trim().toLowerCase() == name).toList();
-    return own.isNotEmpty ? own : byName;
+    return byName.where((e) => e.artist.trim().toLowerCase() == name).toList();
   }
 
   /// URL stream lewat proxy server (sama seperti versi web):
@@ -374,16 +414,45 @@ class ApiService {
 
     final uploader = cleanArtist(t.artist);
     final raw = t.title;
+    // Judul lengkap + uploader sering menjadi kombinasi terbaik: judul SoundCloud
+    // dapat berupa "Artis - Lagu", walau uploader-nya berbeda.
+    add(cleanTitle(raw), uploader);
     if (raw.contains(' - ')) {
       final parts = raw.split(' - ');
       final left = cleanTitle(parts.first);
       final right = cleanTitle(parts.sublist(1).join(' - '));
-      add(left, right);
       add(right, left);
+      add(left, right);
     }
-    add(cleanTitle(raw), uploader);
     add(cleanTitle(raw), '');
     return out.take(4).toList();
+  }
+
+  double? _lyricTimeMs(dynamic value) {
+    if (value is num) return value.toDouble() * 1000;
+    if (value is! String) return null;
+    final number = double.tryParse(value.trim());
+    if (number != null) return number * 1000;
+    final match = _lrcLine.firstMatch('[${value.trim()}]');
+    if (match == null) return null;
+    final minutes = int.tryParse(match.group(1)!) ?? 0;
+    final seconds = int.tryParse(match.group(2)!) ?? 0;
+    final fraction = match.group(3) ?? '';
+    final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
+    return (minutes * 60 + seconds) * 1000 + millis;
+  }
+
+  LyricLine _parseLyricString(String raw) {
+    final match = _lrcLine.firstMatch(raw.trim());
+    if (match == null) return LyricLine(startMs: -1, text: raw.trim());
+    final minutes = int.tryParse(match.group(1)!) ?? 0;
+    final seconds = int.tryParse(match.group(2)!) ?? 0;
+    final fraction = match.group(3) ?? '';
+    final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
+    return LyricLine(
+      startMs: (minutes * 60 + seconds) * 1000 + millis,
+      text: (match.group(4) ?? '').trim(),
+    );
   }
 
   Future<LyricsResult?> _lyricsFromBackend(_LyricCand c, int? duration) async {
@@ -398,24 +467,39 @@ class ApiService {
         retries: 1,
       );
       if (data is! Map || data['success'] != true) return null;
-      final raw = data['lines'];
-      if (raw is! List || raw.isEmpty) return null;
-      final wantSynced = data['synced'] == true;
+      final raw = data['lines'] ?? data['lyrics'];
+      final entries = raw is List
+          ? raw
+          : raw is String
+              ? raw.split(RegExp(r'\r?\n'))
+              : const <dynamic>[];
+      if (entries.isEmpty) return null;
       final out = <LyricLine>[];
-      for (final e in raw) {
+      for (final e in entries) {
+        if (e is String) {
+          final line = _parseLyricString(e);
+          if (line.text.isNotEmpty) out.add(line);
+          continue;
+        }
         if (e is! Map) continue;
-        final text = (e['text'] ?? '').toString().trim();
+        final text = (e['text'] ?? e['line'] ?? e['lyrics'] ?? '').toString().trim();
         if (text.isEmpty) continue;
-        final tSec = e['t'];
-        final endSec = e['end'];
+        final startValue = e['t'] ?? e['start'] ?? e['time'] ?? e['timestamp'] ?? e['startMs'];
+        final endValue = e['end'] ?? e['endMs'];
+        final startMs = e['startMs'] is num
+            ? (e['startMs'] as num).toDouble()
+            : _lyricTimeMs(startValue);
+        final endMs = e['endMs'] is num
+            ? (e['endMs'] as num).toDouble()
+            : _lyricTimeMs(endValue);
         out.add(LyricLine(
-          startMs: wantSynced && tSec is num ? tSec.toDouble() * 1000 : -1,
-          endMs: endSec is num ? endSec.toDouble() * 1000 : null,
+          startMs: startMs ?? -1,
+          endMs: endMs,
           text: text,
         ));
       }
       if (out.isEmpty) return null;
-      return LyricsResult(out, wantSynced && out.every((l) => l.startMs >= 0));
+      return LyricsResult(out, out.every((l) => l.startMs >= 0));
     } catch (_) {
       return null;
     }
