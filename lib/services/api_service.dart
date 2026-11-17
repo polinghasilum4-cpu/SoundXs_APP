@@ -439,7 +439,7 @@ class ApiService {
     final seconds = int.tryParse(match.group(2)!) ?? 0;
     final fraction = match.group(3) ?? '';
     final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
-    return (minutes * 60 + seconds) * 1000 + millis;
+    return ((minutes * 60 + seconds) * 1000 + millis).toDouble();
   }
 
   LyricLine _parseLyricString(String raw) {
@@ -450,7 +450,7 @@ class ApiService {
     final fraction = match.group(3) ?? '';
     final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
     return LyricLine(
-      startMs: (minutes * 60 + seconds) * 1000 + millis,
+      startMs: ((minutes * 60 + seconds) * 1000 + millis).toDouble(),
       text: (match.group(4) ?? '').trim(),
     );
   }
