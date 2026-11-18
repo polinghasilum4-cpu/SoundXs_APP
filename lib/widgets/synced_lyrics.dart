@@ -19,6 +19,9 @@ class SyncedLyrics extends StatefulWidget {
     required this.onSeek,
     this.followPosition = true,
     this.showIntervals = false,
+    this.translations,
+    this.translationLoading = false,
+    this.translationError,
   });
 
   final List<LyricLine> lines;
@@ -28,6 +31,9 @@ class SyncedLyrics extends StatefulWidget {
   final ValueChanged<Duration> onSeek;
   final bool followPosition;
   final bool showIntervals;
+  final List<String>? translations;
+  final bool translationLoading;
+  final String? translationError;
 
   @override
   State<SyncedLyrics> createState() => _SyncedLyricsState();
@@ -47,11 +53,13 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
   void initState() {
     super.initState();
     _active = _indexAt(widget.current.inMilliseconds.toDouble());
-    _lineProgress = _progressAt(widget.current.inMilliseconds.toDouble(), _active);
+    _lineProgress =
+        _progressAt(widget.current.inMilliseconds.toDouble(), _active);
     if (widget.synced) {
       _sub = widget.position.listen(_onPos);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _active >= 0 && widget.followPosition) _follow(_active, instant: true);
+        if (mounted && _active >= 0 && widget.followPosition)
+          _follow(_active, instant: true);
       });
     }
   }
@@ -140,7 +148,8 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
         _active = i;
         _lineProgress = prog;
       });
-      if (lineChanged && i >= 0 && !_userDragging && widget.followPosition) _follow(i);
+      if (lineChanged && i >= 0 && !_userDragging && widget.followPosition)
+        _follow(i);
     }
   }
 
@@ -212,8 +221,42 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (widget.translationLoading)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 16),
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                  color: C.mint, strokeWidth: 2),
+                            ),
+                            SizedBox(width: 8),
+                            Text('Menerjemahkan lirik…',
+                                style: TextStyle(color: C.dim, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (widget.translationError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Center(
+                        child: Text(
+                          widget.translationError!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: C.dim, fontSize: 12),
+                        ),
+                      ),
+                    ),
                   for (var i = 0; i < widget.lines.length; i++) ...[
-                    if (widget.showIntervals && widget.synced && _gapBefore(i) >= 5000) _interval(_gapBefore(i)),
+                    if (widget.showIntervals &&
+                        widget.synced &&
+                        _gapBefore(i) >= 5000)
+                      _interval(_gapBefore(i)),
                     _line(i),
                   ],
                 ],
@@ -241,7 +284,8 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
           const Expanded(child: Divider(color: Color(0x33FFFFFF))),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10),
-            child: Text('Jeda • ${seconds}s', style: const TextStyle(color: C.dim, fontSize: 11)),
+            child: Text('Jeda • ${seconds}s',
+                style: const TextStyle(color: C.dim, fontSize: 11)),
           ),
           const Expanded(child: Divider(color: Color(0x33FFFFFF))),
         ],
@@ -255,20 +299,28 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
 
     // Mode non-synced: semua putih besar, rata kiri
     if (!widget.synced) {
+      final translated = _translationAt(i);
       return KeyedSubtree(
         key: _keys[i],
         child: Padding(
           padding: const EdgeInsets.only(bottom: 18),
-          child: Text(
-            l.text,
-            textAlign: TextAlign.left,
-            style: const TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
-              height: 1.35,
-              letterSpacing: -0.3,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l.text,
+                textAlign: TextAlign.left,
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                  height: 1.35,
+                  letterSpacing: -0.3,
+                ),
+              ),
+              if (translated != null)
+                _translationText(translated, active: false),
+            ],
           ),
         ),
       );
@@ -300,6 +352,7 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
     // Baris yang sudah lewat sedikit lebih pudar
     final past = _active >= 0 && i < _active;
     final baseColor = past ? const Color(0x44FFFFFF) : color;
+    final translated = _translationAt(i);
 
     return KeyedSubtree(
       key: _keys[i],
@@ -318,19 +371,54 @@ class _SyncedLyricsState extends State<SyncedLyrics> {
               height: 1.3,
               letterSpacing: -0.35,
             ),
-            child: isActive
-                ? _KaraokeFill(
-                    text: l.text,
-                    progress: _lineProgress,
-                    size: size,
-                    weight: weight,
-                  )
-                : Text(l.text, textAlign: TextAlign.left),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                isActive
+                    ? _KaraokeFill(
+                        text: l.text,
+                        progress: _lineProgress,
+                        size: size,
+                        weight: weight,
+                      )
+                    : Text(l.text, textAlign: TextAlign.left),
+                if (translated != null)
+                  _translationText(translated, active: isActive, past: past),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  String? _translationAt(int index) {
+    final items = widget.translations;
+    if (items == null || index >= items.length) return null;
+    final text = items[index].trim();
+    return text.isEmpty ? null : text;
+  }
+
+  Widget _translationText(String text,
+          {required bool active, bool past = false}) =>
+      Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Text(
+          text,
+          textAlign: TextAlign.left,
+          style: TextStyle(
+            fontSize: active ? 17 : 14,
+            fontWeight: FontWeight.w500,
+            color: past
+                ? const Color(0x55FFFFFF)
+                : active
+                    ? const Color(0xCCFFFFFF)
+                    : const Color(0x77FFFFFF),
+            height: 1.35,
+            letterSpacing: 0,
+          ),
+        ),
+      );
 }
 
 /// Fill putih kiri → kanan mengikuti progress baris (karaoke Spotify).
