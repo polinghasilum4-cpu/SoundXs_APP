@@ -57,8 +57,10 @@ class ApiService {
   static const _ua =
       'Mozilla/5.0 (Linux; Android 13; SM-A135F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  static final _lrcLine = RegExp(r'^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$');
-  static final _emoji = RegExp(r'[\u{10000}-\u{10FFFF}\u2600-\u27BF\uFE0F\u200D]', unicode: true);
+  static final _lrcLine =
+      RegExp(r'^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$');
+  static final _emoji =
+      RegExp(r'[\u{10000}-\u{10FFFF}\u2600-\u27BF\uFE0F\u200D]', unicode: true);
   static final _brackets = RegExp(r'\([^)]*\)|\[[^\]]*\]');
   static final _noise = RegExp(
     r'\b(official|lyrics?|audio|video|mv|hd|hq|viral|tiktok|spotify|music|lagu|terbaru|hits?|pop indonesia|indonesia)\b',
@@ -98,9 +100,10 @@ class ApiService {
     ApiException? last;
     for (var attempt = 1; attempt <= retries; attempt++) {
       try {
-        final res = await _http
-            .get(uri, headers: {'Accept': 'application/json', 'User-Agent': _ua})
-            .timeout(timeout ?? _timeout);
+        final res = await _http.get(uri, headers: {
+          'Accept': 'application/json',
+          'User-Agent': _ua
+        }).timeout(timeout ?? _timeout);
         onStatus?.call(res.statusCode);
         dynamic data;
         try {
@@ -110,7 +113,8 @@ class ApiService {
         }
         if (res.statusCode == 200) return data;
         final msg = data is Map ? data['error'] : null;
-        last = ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
+        last =
+            ApiException(msg?.toString() ?? 'Server error (${res.statusCode})');
         final retryable = res.statusCode >= 500 || res.statusCode == 429;
         if (!retryable) throw last;
       } on TimeoutException {
@@ -151,7 +155,8 @@ class ApiService {
         return saved;
       }
     }
-    final data = await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/get-credentials'));
+    final data =
+        await _getJson(Uri.parse('${ApiConfig.baseUrl}$_api/get-credentials'));
     final id = data is Map ? (data['client_id'] ?? data['clientId']) : null;
     if (id is! String || id.length < 20) {
       throw ApiException('Kredensial SoundCloud tidak tersedia');
@@ -162,7 +167,8 @@ class ApiService {
     return id;
   }
 
-  Future<List<Track>> _requestSearch(Map<String, String> params, ItemKind kind) {
+  Future<List<Track>> _requestSearch(
+      Map<String, String> params, ItemKind kind) {
     final keys = params.keys.toList()..sort();
     final key = keys.map((k) => '$k=${params[k]}').join('&');
 
@@ -173,7 +179,8 @@ class ApiService {
     final running = _inflight[key];
     if (running != null) return running;
 
-    final f = _loadOrFetchSearch(key, params, kind).whenComplete(() => _inflight.remove(key));
+    final f = _loadOrFetchSearch(key, params, kind)
+        .whenComplete(() => _inflight.remove(key));
     _inflight[key] = f;
     return f;
   }
@@ -190,11 +197,13 @@ class ApiService {
       if (raw != null) {
         final saved = jsonDecode(raw);
         if (saved is Map && saved['at'] is int && saved['items'] is List) {
-          final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(saved['at'] as int));
+          final age = DateTime.now().difference(
+              DateTime.fromMillisecondsSinceEpoch(saved['at'] as int));
           if (age <= _maxStale) {
             final items = (saved['items'] as List)
                 .whereType<Map>()
-                .map((e) => Track.fromJson(Map<String, dynamic>.from(e), kind: kind))
+                .map((e) =>
+                    Track.fromJson(Map<String, dynamic>.from(e), kind: kind))
                 .where((t) => t.id.isNotEmpty)
                 .toList();
             if (items.isNotEmpty) {
@@ -217,10 +226,12 @@ class ApiService {
       if (_cache.length > 40) _cache.remove(_cache.keys.first);
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(prefsKey, jsonEncode({
-          'at': DateTime.now().millisecondsSinceEpoch,
-          'items': items.take(250).map((e) => e.toJson()).toList(),
-        }));
+        await prefs.setString(
+            prefsKey,
+            jsonEncode({
+              'at': DateTime.now().millisecondsSinceEpoch,
+              'items': items.take(250).map((e) => e.toJson()).toList(),
+            }));
       } catch (_) {}
     }
     return items;
@@ -240,10 +251,12 @@ class ApiService {
       _cache[key] = _Cached(items);
       if (_cache.length > 40) _cache.remove(_cache.keys.first);
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(prefsKey, jsonEncode({
-        'at': DateTime.now().millisecondsSinceEpoch,
-        'items': items.take(250).map((e) => e.toJson()).toList(),
-      }));
+      await prefs.setString(
+          prefsKey,
+          jsonEncode({
+            'at': DateTime.now().millisecondsSinceEpoch,
+            'items': items.take(250).map((e) => e.toJson()).toList(),
+          }));
     } catch (_) {
       // Cache lama tetap digunakan saat jaringan tidak tersedia.
     } finally {
@@ -268,18 +281,21 @@ class ApiService {
     return null;
   }
 
-  Future<List<Track>> _fetchSearch(Map<String, String> params, ItemKind kind) async {
+  Future<List<Track>> _fetchSearch(
+      Map<String, String> params, ItemKind kind) async {
     Uri build(String clientId) => Uri.parse('${ApiConfig.baseUrl}$_api/search')
         .replace(queryParameters: {...params, 'client_id': clientId});
 
     dynamic data;
     var status = 200;
     try {
-      data = await _getJson(build(await getCredentials()), onStatus: (s) => status = s, retries: 2);
+      data = await _getJson(build(await getCredentials()),
+          onStatus: (s) => status = s, retries: 2);
     } on ApiException {
       if (status != 401) rethrow;
       // client_id kedaluwarsa: ambil yang baru sekali, lalu coba lagi.
-      data = await _getJson(build(await getCredentials(force: true)), retries: 1);
+      data =
+          await _getJson(build(await getCredentials(force: true)), retries: 1);
     }
 
     if (data is Map && data['success'] == false) {
@@ -306,7 +322,8 @@ class ApiService {
 
   Future<List<Track>> getPlaylistTracks(String id) =>
       // Minta batas maksimum agar playlist tidak terpotong menjadi beberapa lagu.
-      _requestSearch({'playlist_id': id, 'type': 'tracks', 'limit': '200'}, ItemKind.track);
+      _requestSearch({'playlist_id': id, 'type': 'tracks', 'limit': '200'},
+          ItemKind.track);
 
   Future<void> prefetchTrackList(Track item) async {
     try {
@@ -324,8 +341,10 @@ class ApiService {
     final album = track.albumTitle.trim();
     if (album.isEmpty) return [track];
     final results = await search(album);
-    final matches = results.where((candidate) =>
-        candidate.albumTitle.trim().toLowerCase() == album.toLowerCase()).toList();
+    final matches = results
+        .where((candidate) =>
+            candidate.albumTitle.trim().toLowerCase() == album.toLowerCase())
+        .toList();
     return matches.isEmpty ? results : matches;
   }
 
@@ -341,10 +360,12 @@ class ApiService {
   Future<String> proxiedStream(Track t) async {
     if (t.streamUrl.isEmpty) return '';
     final id = await getCredentials();
-    return Uri.parse('${ApiConfig.baseUrl}$_api/stream').replace(queryParameters: {
+    return Uri.parse('${ApiConfig.baseUrl}$_api/stream')
+        .replace(queryParameters: {
       'url': t.streamUrl,
       'client_id': id,
-      if (t.trackAuthorization.isNotEmpty) 'track_authorization': t.trackAuthorization,
+      if (t.trackAuthorization.isNotEmpty)
+        'track_authorization': t.trackAuthorization,
     }).toString();
   }
 
@@ -352,7 +373,11 @@ class ApiService {
   Future<Track?> refresh(Track t) async {
     // Lewati cache: stream URL yang tersimpan dapat kedaluwarsa. Cari dengan variasi
     // judul/artis karena judul SoundCloud sering memuat nama artis di dalamnya.
-    final parts = t.title.split(' - ').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final parts = t.title
+        .split(' - ')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     final queries = <String>{
       '${t.title} ${t.artist}'.trim(),
       '${t.artist} ${t.title}'.trim(),
@@ -370,7 +395,8 @@ class ApiService {
     }));
     final candidates = results.expand((e) => e).toList();
     for (final candidate in candidates) {
-      if (candidate.id == t.id && candidate.streamUrl.isNotEmpty) return candidate;
+      if (candidate.id == t.id && candidate.streamUrl.isNotEmpty)
+        return candidate;
     }
     final wantedTitles = <String>{
       cleanTitle(t.title).toLowerCase(),
@@ -379,7 +405,8 @@ class ApiService {
     final sameTitle = candidates.where((candidate) =>
         candidate.streamUrl.isNotEmpty &&
         wantedTitles.contains(cleanTitle(candidate.title).toLowerCase()) &&
-        (t.durationMs <= 0 || candidate.durationMs <= 0 ||
+        (t.durationMs <= 0 ||
+            candidate.durationMs <= 0 ||
             (candidate.durationMs - t.durationMs).abs() <= 15000));
     if (sameTitle.isNotEmpty) return sameTitle.first;
     return null;
@@ -397,7 +424,8 @@ class ApiService {
     return _collapse(s);
   }
 
-  static String cleanArtist(String raw) => _collapse(raw.replaceAll(_emoji, ' '));
+  static String cleanArtist(String raw) =>
+      _collapse(raw.replaceAll(_emoji, ' '));
 
   /// Kandidat (judul, artis) untuk pencarian lirik. Judul SoundCloud sering berbentuk
   /// "Judul - Artis" atau "Artis - Judul", dan uploader belum tentu artisnya.
@@ -408,7 +436,8 @@ class ApiService {
       final ar = artist.trim();
       if (ti.length < 2) return;
       final dup = out.any((c) =>
-          c.title.toLowerCase() == ti.toLowerCase() && c.artist.toLowerCase() == ar.toLowerCase());
+          c.title.toLowerCase() == ti.toLowerCase() &&
+          c.artist.toLowerCase() == ar.toLowerCase());
       if (!dup) out.add((title: ti, artist: ar));
     }
 
@@ -438,7 +467,9 @@ class ApiService {
     final minutes = int.tryParse(match.group(1)!) ?? 0;
     final seconds = int.tryParse(match.group(2)!) ?? 0;
     final fraction = match.group(3) ?? '';
-    final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
+    final millis = fraction.isEmpty
+        ? 0
+        : int.parse(fraction.padRight(3, '0').substring(0, 3));
     return ((minutes * 60 + seconds) * 1000 + millis).toDouble();
   }
 
@@ -448,7 +479,9 @@ class ApiService {
     final minutes = int.tryParse(match.group(1)!) ?? 0;
     final seconds = int.tryParse(match.group(2)!) ?? 0;
     final fraction = match.group(3) ?? '';
-    final millis = fraction.isEmpty ? 0 : int.parse(fraction.padRight(3, '0').substring(0, 3));
+    final millis = fraction.isEmpty
+        ? 0
+        : int.parse(fraction.padRight(3, '0').substring(0, 3));
     return LyricLine(
       startMs: ((minutes * 60 + seconds) * 1000 + millis).toDouble(),
       text: (match.group(4) ?? '').trim(),
@@ -482,9 +515,11 @@ class ApiService {
           continue;
         }
         if (e is! Map) continue;
-        final text = (e['text'] ?? e['line'] ?? e['lyrics'] ?? '').toString().trim();
+        final text =
+            (e['text'] ?? e['line'] ?? e['lyrics'] ?? '').toString().trim();
         if (text.isEmpty) continue;
-        final startValue = e['t'] ?? e['start'] ?? e['time'] ?? e['timestamp'] ?? e['startMs'];
+        final startValue =
+            e['t'] ?? e['start'] ?? e['time'] ?? e['timestamp'] ?? e['startMs'];
         final endValue = e['end'] ?? e['endMs'];
         final startMs = e['startMs'] is num
             ? (e['startMs'] as num).toDouble()
@@ -499,7 +534,16 @@ class ApiService {
         ));
       }
       if (out.isEmpty) return null;
-      return LyricsResult(out, out.every((l) => l.startMs >= 0));
+      final synced = out.every((l) => l.startMs >= 0);
+      if (synced) {
+        final ordered = out.asMap().entries.toList()
+          ..sort((a, b) {
+            final byTime = a.value.startMs.compareTo(b.value.startMs);
+            return byTime != 0 ? byTime : a.key.compareTo(b.key);
+          });
+        return LyricsResult(ordered.map((entry) => entry.value).toList(), true);
+      }
+      return LyricsResult(out, false);
     } catch (_) {
       return null;
     }
@@ -510,7 +554,8 @@ class ApiService {
   Future<LyricsResult> getLyrics(Track t) async {
     final duration = t.durationMs > 0 ? (t.durationMs / 1000).round() : null;
     final cands = _lyricCandidates(t);
-    final results = await Future.wait(cands.map((c) => _lyricsFromBackend(c, duration)));
+    final results =
+        await Future.wait(cands.map((c) => _lyricsFromBackend(c, duration)));
 
     LyricsResult? best;
     for (final result in results) {
@@ -521,4 +566,40 @@ class ApiService {
     return best ?? const LyricsResult([], false);
   }
 
+  /// Terjemahkan tiap baris melalui endpoint yang sama dengan SoundXs Web.
+  /// Response harus mempertahankan jumlah dan urutan baris sumber.
+  Future<List<String>> translateLyrics(List<String> lines,
+      {required String to}) async {
+    if (lines.isEmpty) return const [];
+    final response = await _http
+        .post(
+          Uri.parse('${ApiConfig.baseUrl}$_api/translate'),
+          headers: const {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({'lines': lines, 'to': to}),
+        )
+        .timeout(const Duration(seconds: 40));
+
+    dynamic data;
+    try {
+      data = jsonDecode(utf8.decode(response.bodyBytes));
+    } catch (_) {
+      data = null;
+    }
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        data is! Map ||
+        data['success'] != true) {
+      final message = data is Map ? data['error']?.toString() : null;
+      throw ApiException(
+          message?.isNotEmpty == true ? message! : 'Terjemahan lirik gagal.');
+    }
+    final translated = data['lines'];
+    if (translated is! List || translated.length != lines.length) {
+      throw ApiException('Jumlah baris terjemahan tidak cocok dengan lirik.');
+    }
+    return translated.map((line) => line?.toString().trim() ?? '').toList();
+  }
 }
