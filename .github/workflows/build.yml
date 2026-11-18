@@ -46,16 +46,17 @@ jobs:
           test -f android/gradlew
           test -f android/app/src/main/AndroidManifest.xml
 
-      - name: Configure application ID and minimum SDK
+      - name: Configure application ID and Android SDK levels
         shell: bash
         run: |
           set -euo pipefail
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] || continue
             sed -i -E 's/com\.soundxs\.[A-Za-z0-9_]+/com.soundxs.app/g' "$f"
-            sed -i -E 's/minSdk(Version)?( =|[[:space:]]+)flutter\.minSdkVersion/minSdk\1\2 23/g' "$f"
+            sed -i -E 's/minSdk(Version)?([[:space:]]*=[[:space:]]*|[[:space:]]+)flutter\.minSdkVersion/minSdk\1\2 29/g' "$f"
+            sed -i -E 's/targetSdk(Version)?([[:space:]]*=[[:space:]]*|[[:space:]]+)flutter\.targetSdkVersion/targetSdk\1\2 35/g' "$f"
           done
-          grep -R -nE 'applicationId|namespace|minSdk' android/app/build.gradle* || true
+          grep -R -nE 'applicationId|namespace|minSdk|targetSdk|compileSdk' android/app/build.gradle* || true
 
       - name: Resolve Flutter dependencies
         run: flutter pub get
