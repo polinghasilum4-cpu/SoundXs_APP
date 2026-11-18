@@ -63,10 +63,25 @@ class ProfileScreen extends StatelessWidget {
     if (!_isAndroid) return;
     var status = await Permission.notification.status;
     if (status.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Izin notifikasi aktif. Kontrol pemutaran dapat tampil di panel notifikasi.'),
-        behavior: SnackBarBehavior.floating,
-      ));
+      if (!context.mounted) return;
+      final openSettings = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: C.surface,
+          title: const Text('Izin notifikasi aktif'),
+          content: const Text(
+            'Izin Android sudah aktif. Jika kontrol lagu masih belum muncul, notifikasi SoundXs mungkin dimatikan di Pengaturan aplikasi.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Tutup')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Buka pengaturan'),
+            ),
+          ],
+        ),
+      );
+      if (openSettings == true) await openAppSettings();
       return;
     }
     if (!context.mounted) return;
@@ -216,7 +231,7 @@ class ProfileScreen extends StatelessWidget {
                     leading: const Icon(Icons.notifications_active_rounded, color: C.mint),
                     title: const Text('Kontrol di panel notifikasi', style: TextStyle(fontWeight: FontWeight.w700)),
                     subtitle: const Text(
-                      'Izin bisa diminta lagi di sini atau dibuka melalui Pengaturan aplikasi.',
+                      'Android 13 ke atas meminta izin. Jika notifikasi tidak muncul, periksa Pengaturan aplikasi.',
                       style: TextStyle(color: C.dim, fontSize: 12),
                     ),
                     trailing: const Icon(Icons.chevron_right_rounded, color: C.dim),

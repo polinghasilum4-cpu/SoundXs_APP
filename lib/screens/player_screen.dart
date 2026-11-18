@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../core/perf.dart';
 import '../globals.dart';
 import '../models/track.dart';
@@ -32,6 +35,17 @@ const kStyleInfo = <String, String>{
   'bass': 'Dentuman bass ditebalkan',
 };
 
+const _lyricTranslationLanguages = <String, String>{
+  'id': 'Indonesia',
+  'en': 'English',
+  'ms': 'Melayu',
+  'ja': '日本語',
+  'ko': '한국어',
+  'zh-CN': '中文',
+  'es': 'Español',
+  'ar': 'العربية',
+};
+
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -41,12 +55,21 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   final _api = ApiService();
-  double? _drag; // posisi saat slider digeser (biar tidak ditarik balik stream posisi)
+  double?
+      _drag; // posisi saat slider digeser (biar tidak ditarik balik stream posisi)
   Color _tint = C.teal;
   String _tintFor = '';
   _PlayerView _view = _PlayerView.cover;
   String _lyricsId = '';
   Future<LyricsResult>? _lyrics;
+  bool _translationOn = false;
+  String _translationLanguage = 'id';
+  List<String>? _translations;
+  String _translationForKey = '';
+  bool _translationLoading = false;
+  String? _translationError;
+  int _translationRequest = 0;
+  String _translationTrackId = '';
   bool _followLyrics = true;
   bool _showIntervals = false;
   bool _downloading = false;
@@ -57,6 +80,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.initState();
     audioHandler.current.addListener(_onTrack);
     _onTrack();
+    unawaited(_loadTranslationPreferences());
   }
 
   @override
@@ -68,10 +92,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _onTrack() {
     final t = audioHandler.current.value;
     if (t == null) {
-      if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+      _translationRequest++;
+      _translationTrackId = '';
+      _translations = null;
+      _translationForKey = '';
+      _translationLoading = false;
+      if (mounted && Navigator.of(context).canPop())
+        Navigator.of(context).pop();
       return;
     }
-    if (_view == _PlayerView.lyrics) _ensureLyrics(t);
+    if (_translationTrackId != t.id) {
+      _translationRequest++;
+      _translationTrackId = t.id;
+      _translations = null;
+      _translationForKey = '';
+      _translationLoading = false;
+      _translationError = null;
+    }
+    if (_view == _PlayerView.lyrics) {
+      _ensureLyrics(t);
+      if (_translationOn) unawaited(_ensureTranslation(t));
+    }
     if (t.coverUrl == _tintFor) return;
     _tintFor = t.coverUrl;
     final cached = CoverColors.peek(t.coverUrl);
@@ -94,11 +135,142 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : Future.value(_plainLyrics(override));
   }
 
+  Future<void> _loadTranslationPreferences() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      final lang = prefs.getString('sp_tr_lang') ?? 'id';
+      setState(() {
+        _translationOn = prefs.getBool('sp_tr_on') ?? false;
+        _translationLanguage =
+            _lyricTranslationLanguages.containsKey(lang) ? lang : 'id';
+      });
+      final track = audioHandler.current.value;
+      if (_translationOn && track != null && _view == _PlayerView.lyrics) {
+        unawaited(_ensureTranslation(track));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _ensureTranslation(Track track) async {
+    if (!_translationOn || !mounted) return;
+    final lang = _translationLanguage;
+    final requestKey = '${track.id}_$lang';
+    if (_translationForKey == requestKey &&
+        (_translationLoading || _translations != null)) return;
+
+    final request = ++_translationRequest;
+    _translationForKey = requestKey;
+    setState(() {
+      _translationLoading = true;
+      _translationError = null;
+      _translations = null;
+    });
+
+    bool stillCurrent() =>
+        mounted &&
+        request == _translationRequest &&
+        _translationOn &&
+        _translationLanguage == lang &&
+        audioHandler.current.value?.id == track.id;
+
+    try {
+      final lyricFuture = _lyricsId == track.id && _lyrics != null
+          ? _lyrics!
+          : _api.getLyrics(track);
+      final result = await lyricFuture;
+      if (!stillCurrent()) return;
+      if (result.isEmpty)
+        throw ApiException('Lirik tidak tersedia untuk diterjemahkan.');
+
+      final sourceLines = result.lines.map((line) => line.text).toList();
+      final prefs = await SharedPreferences.getInstance();
+      final cacheKey = 'sx_lyric_tr_${track.id}_$lang';
+      List<String>? translated;
+      final cached = prefs.getString(cacheKey);
+      if (cached != null) {
+        try {
+          final data = jsonDecode(cached);
+          if (data is Map && data['source'] is List && data['lines'] is List) {
+            final cachedSource = (data['source'] as List)
+                .map((line) => line.toString())
+                .toList();
+            final cachedLines =
+                (data['lines'] as List).map((line) => line.toString()).toList();
+            if (listEquals(cachedSource, sourceLines) &&
+                cachedLines.length == sourceLines.length) {
+              translated = cachedLines;
+            }
+          }
+        } catch (_) {}
+      }
+      translated ??= await _api.translateLyrics(sourceLines, to: lang);
+      if (!stillCurrent()) return;
+      await prefs.setString(
+          cacheKey, jsonEncode({'source': sourceLines, 'lines': translated}));
+      if (!stillCurrent()) return;
+      setState(() {
+        _translations = translated;
+        _translationLoading = false;
+        _translationError = null;
+      });
+    } catch (error) {
+      if (!stillCurrent()) return;
+      final message = error is ApiException
+          ? error.message
+          : 'Terjemahan gagal. Coba lagi.';
+      setState(() {
+        _translations = null;
+        _translationLoading = false;
+        _translationError = message;
+        _translationForKey = '';
+      });
+      _snack(message);
+    }
+  }
+
+  Future<void> _setTranslationEnabled(bool enabled, Track track) async {
+    setState(() {
+      _translationOn = enabled;
+      _translationRequest++;
+      _translationError = null;
+      if (!enabled) {
+        _translations = null;
+        _translationLoading = false;
+        _translationForKey = '';
+      }
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('sp_tr_on', enabled);
+    } catch (_) {}
+    if (enabled) await _ensureTranslation(track);
+  }
+
+  Future<void> _setTranslationLanguage(String language, Track track) async {
+    if (!_lyricTranslationLanguages.containsKey(language)) return;
+    setState(() {
+      _translationLanguage = language;
+      _translationRequest++;
+      _translations = null;
+      _translationForKey = '';
+      _translationError = null;
+      _translationLoading = false;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('sp_tr_lang', language);
+    } catch (_) {}
+    if (_translationOn) await _ensureTranslation(track);
+  }
+
   void _setView(_PlayerView v) {
     final t = audioHandler.current.value;
     if (t == null) return;
     if (v == _PlayerView.lyrics) _ensureLyrics(t);
     setState(() => _view = v);
+    if (v == _PlayerView.lyrics && _translationOn)
+      unawaited(_ensureTranslation(t));
   }
 
   String _fmt(Duration d) {
@@ -162,7 +334,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _topBar() => Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 32, color: Colors.white),
+            icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                size: 32, color: Colors.white),
             onPressed: () => Navigator.of(context).pop(),
           ),
           const Expanded(
@@ -193,11 +366,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
         context: context,
         isScrollControlled: true,
         backgroundColor: C.surface,
-        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, sheetSetState) => SafeArea(
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.88),
+              constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(ctx).size.height * 0.88),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
                 child: Column(
@@ -225,16 +400,88 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ],
                     ),
                     const Divider(height: 24),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.translate_rounded, color: Colors.white70),
-                      title: const Text('Terjemahan lirik AI'),
-                      subtitle: const Text('Belum tersedia di API SoundXs'),
-                      trailing: const Switch(value: false, onChanged: null),
-                    ),
                     SwitchListTile.adaptive(
                       contentPadding: EdgeInsets.zero,
-                      secondary: const Icon(Icons.subtitles_rounded, color: Colors.white70),
+                      secondary: const Icon(Icons.translate_rounded,
+                          color: Colors.white70),
+                      title: const Text('Terjemahkan lirik'),
+                      subtitle: const Text(
+                          'Tampilkan terjemahan di bawah tiap baris'),
+                      value: _translationOn,
+                      onChanged: (enabled) {
+                        final pending = _setTranslationEnabled(enabled, t);
+                        sheetSetState(() {});
+                        unawaited(pending.whenComplete(() {
+                          if (ctx.mounted) sheetSetState(() {});
+                        }));
+                      },
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.language_rounded,
+                              size: 19, color: Colors.white70),
+                          const SizedBox(width: 10),
+                          const Text('Bahasa terjemahan',
+                              style: TextStyle(color: C.sub, fontSize: 13)),
+                          const Spacer(),
+                          DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _translationLanguage,
+                              dropdownColor: C.surface,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 13),
+                              items: _lyricTranslationLanguages.entries
+                                  .map((entry) => DropdownMenuItem<String>(
+                                        value: entry.key,
+                                        child: Text(entry.value),
+                                      ))
+                                  .toList(),
+                              onChanged: (language) {
+                                if (language == null) return;
+                                final pending =
+                                    _setTranslationLanguage(language, t);
+                                sheetSetState(() {});
+                                unawaited(pending.whenComplete(() {
+                                  if (ctx.mounted) sheetSetState(() {});
+                                }));
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_translationLoading)
+                      const ListTile(
+                        dense: true,
+                        leading: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              color: C.mint, strokeWidth: 2),
+                        ),
+                        title: Text('Menerjemahkan…',
+                            style: TextStyle(color: C.dim, fontSize: 13)),
+                      ),
+                    if (_translationError != null)
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.error_outline_rounded,
+                            color: C.dim),
+                        title: Text(_translationError!,
+                            style: const TextStyle(color: C.dim, fontSize: 12)),
+                        trailing: const Icon(Icons.refresh_rounded,
+                            color: Colors.white70),
+                        onTap: () {
+                          unawaited(_ensureTranslation(t));
+                          sheetSetState(() {});
+                        },
+                      ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      secondary: const Icon(Icons.subtitles_rounded,
+                          color: Colors.white70),
                       title: const Text('Ikuti posisi lirik'),
                       subtitle: const Text('Gulir otomatis mengikuti lagu'),
                       value: _followLyrics,
@@ -245,9 +492,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                     SwitchListTile.adaptive(
                       contentPadding: EdgeInsets.zero,
-                      secondary: const Icon(Icons.more_horiz_rounded, color: Colors.white70),
+                      secondary: const Icon(Icons.more_horiz_rounded,
+                          color: Colors.white70),
                       title: const Text('Tampilkan indikator interval'),
-                      subtitle: const Text('Tandai jeda panjang antarbaris lirik'),
+                      subtitle:
+                          const Text('Tandai jeda panjang antarbaris lirik'),
                       value: _showIntervals,
                       onChanged: (value) {
                         setState(() => _showIntervals = value);
@@ -257,18 +506,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const Divider(height: 20),
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.source_rounded, color: Colors.white70),
+                      leading: const Icon(Icons.source_rounded,
+                          color: Colors.white70),
                       title: const Text('Sumber lirik'),
-                      trailing: const Text('SoundXs', style: TextStyle(color: C.dim)),
+                      trailing:
+                          const Text('SoundXs', style: TextStyle(color: C.dim)),
                     ),
                     FutureBuilder<LyricsResult>(
                       future: _lyrics,
                       builder: (_, snap) => ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.schedule_rounded, color: Colors.white70),
+                        leading: const Icon(Icons.schedule_rounded,
+                            color: Colors.white70),
                         title: const Text('Waktu lirik'),
                         trailing: Text(
-                          snap.data?.synced == true ? 'Tersinkron' : 'Tidak disinkron',
+                          snap.data?.synced == true
+                              ? 'Tersinkron'
+                              : 'Tidak disinkron',
                           style: const TextStyle(color: C.dim),
                         ),
                       ),
@@ -286,7 +540,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: C.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -294,8 +549,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
             const SizedBox(height: 8),
             ListTile(
               leading: CoverImage(url: t.coverUrl, size: 44, radius: 8),
-              title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
+              title:
+                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle:
+                  Text(t.artist, maxLines: 1, overflow: TextOverflow.ellipsis),
             ),
             const Divider(height: 1),
             ListTile(
@@ -318,15 +575,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ListTile(
                 leading: const Icon(Icons.album_rounded),
                 title: const Text('Lihat album'),
-                subtitle: Text(t.albumTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(t.albumTitle,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
                 onTap: () {
                   Navigator.pop(ctx);
                   _openAlbum(t);
                 },
               ),
             ListTile(
-              leading: Icon(store.isLiked(t.id) ? Icons.library_add_check_rounded : Icons.library_add_rounded),
-              title: Text(store.isLiked(t.id) ? 'Hapus dari pustaka' : 'Tambah ke pustaka'),
+              leading: Icon(store.isLiked(t.id)
+                  ? Icons.library_add_check_rounded
+                  : Icons.library_add_rounded),
+              title: Text(store.isLiked(t.id)
+                  ? 'Hapus dari pustaka'
+                  : 'Tambah ke pustaka'),
               onTap: () {
                 store.toggleLike(t);
                 Navigator.pop(ctx);
@@ -347,7 +609,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _lyricsAction(IconData icon, String label, VoidCallback onTap) => Expanded(
+  Widget _lyricsAction(IconData icon, String label, VoidCallback onTap) =>
+      Expanded(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
           child: InkWell(
@@ -355,13 +618,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
             onTap: onTap,
             child: Container(
               height: 78,
-              decoration: BoxDecoration(color: op(Colors.white, 0.06), borderRadius: BorderRadius.circular(16)),
+              decoration: BoxDecoration(
+                  color: op(Colors.white, 0.06),
+                  borderRadius: BorderRadius.circular(16)),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(icon, color: Colors.white70, size: 23),
                   const SizedBox(height: 7),
-                  Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  Text(label,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 12)),
                 ],
               ),
             ),
@@ -381,7 +648,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _editLyrics(Track t) async {
     final existing = store.lyricsOverride(t.id);
-    final current = existing ?? (await (_lyrics ?? _api.getLyrics(t))).lines.map((e) => e.text).join('\n');
+    final current = existing ??
+        (await (_lyrics ?? _api.getLyrics(t)))
+            .lines
+            .map((e) => e.text)
+            .join('\n');
     if (!mounted) return;
     final controller = TextEditingController(text: current);
     final action = await showDialog<String>(
@@ -397,14 +668,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
             maxLines: 14,
             keyboardType: TextInputType.multiline,
             style: const TextStyle(color: Colors.white, height: 1.35),
-            decoration: const InputDecoration(hintText: 'Satu baris lirik per baris'),
+            decoration:
+                const InputDecoration(hintText: 'Satu baris lirik per baris'),
           ),
         ),
         actions: [
           if (existing != null)
-            TextButton(onPressed: () => Navigator.pop(ctx, 'reset'), child: const Text('Pulihkan dari API')),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Simpan')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, 'reset'),
+                child: const Text('Pulihkan dari API')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan')),
         ],
       ),
     );
@@ -418,9 +695,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     } else {
       store.setLyricsOverride(t.id, controller.text);
       setState(() {
+        _translationRequest++;
+        _translations = null;
+        _translationForKey = '';
+        _translationLoading = false;
+        _translationError = null;
         _lyricsId = t.id;
         _lyrics = Future.value(_plainLyrics(controller.text));
       });
+      if (_translationOn) unawaited(_ensureTranslation(t));
     }
     controller.dispose();
   }
@@ -436,13 +719,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: title, decoration: const InputDecoration(labelText: 'Judul lagu')),
-            TextField(controller: artist, decoration: const InputDecoration(labelText: 'Artis')),
+            TextField(
+                controller: title,
+                decoration: const InputDecoration(labelText: 'Judul lagu')),
+            TextField(
+                controller: artist,
+                decoration: const InputDecoration(labelText: 'Artis')),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cari')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Batal')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Cari')),
         ],
       ),
     );
@@ -456,9 +747,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
       final lookup = _api.getLyrics(query);
       setState(() {
+        _translationRequest++;
+        _translations = null;
+        _translationForKey = '';
+        _translationLoading = false;
+        _translationError = null;
         _lyricsId = t.id;
         _lyrics = lookup;
       });
+      if (_translationOn) unawaited(_ensureTranslation(t));
       try {
         final result = await lookup;
         if (!mounted) {
@@ -522,16 +819,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _snack('Lirik tidak tersedia untuk disalin');
       return;
     }
-    await Clipboard.setData(ClipboardData(text: result.lines.map((line) => line.text).join('\n')));
+    await Clipboard.setData(
+        ClipboardData(text: result.lines.map((line) => line.text).join('\n')));
     _snack('Lirik disalin');
   }
 
   void _refreshLyrics(Track t) {
     setState(() {
+      _translationRequest++;
+      _translations = null;
+      _translationForKey = '';
+      _translationLoading = false;
+      _translationError = null;
       _lyricsId = '';
       _lyrics = null;
       _ensureLyrics(t);
     });
+    if (_translationOn) unawaited(_ensureTranslation(t));
   }
 
   Future<void> _removeOffline(Track t) async {
@@ -542,8 +846,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         title: const Text('Hapus unduhan?'),
         content: Text('“${t.title}” akan dihapus dari penyimpanan offline.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Hapus')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Batal')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Hapus')),
         ],
       ),
     );
@@ -562,16 +870,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _segItem('Cover', _view == _PlayerView.cover, () => _setView(_PlayerView.cover)),
-            _segItem('Lirik', _view == _PlayerView.lyrics, () => _setView(_PlayerView.lyrics)),
-            _segItem('Gaya', false, _showStyles, icon: Icons.graphic_eq_rounded),
+            _segItem('Cover', _view == _PlayerView.cover,
+                () => _setView(_PlayerView.cover)),
+            _segItem('Lirik', _view == _PlayerView.lyrics,
+                () => _setView(_PlayerView.lyrics)),
+            _segItem('Gaya', false, _showStyles,
+                icon: Icons.graphic_eq_rounded),
           ],
         ),
       ),
     );
   }
 
-  Widget _segItem(String label, bool active, VoidCallback onTap, {IconData? icon}) {
+  Widget _segItem(String label, bool active, VoidCallback onTap,
+      {IconData? icon}) {
     return PressScale(
       onTap: onTap,
       child: AnimatedContainer(
@@ -586,7 +898,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (icon != null) ...[
-              Icon(icon, size: 14, color: active ? Colors.black : Colors.white70),
+              Icon(icon,
+                  size: 14, color: active ? Colors.black : Colors.white70),
               const SizedBox(width: 5),
             ],
             Text(
@@ -613,9 +926,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         key: ValueKey(_view),
         builder: (context, c) {
           if (_view == _PlayerView.lyrics) {
-            return SizedBox(width: c.maxWidth, height: c.maxHeight, child: _lyricsPanel(t));
+            return SizedBox(
+                width: c.maxWidth, height: c.maxHeight, child: _lyricsPanel(t));
           }
-          final side = (math.min(c.maxWidth, c.maxHeight) * 0.96).clamp(120.0, 560.0).toDouble();
+          final side = (math.min(c.maxWidth, c.maxHeight) * 0.96)
+              .clamp(120.0, 560.0)
+              .toDouble();
           return Center(child: _cover(t, side, lite));
         },
       ),
@@ -638,7 +954,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
               borderRadius: BorderRadius.circular(28),
               boxShadow: lite
                   ? null
-                  : [BoxShadow(color: op(Colors.black, 0.45), blurRadius: 40, offset: const Offset(0, 18))],
+                  : [
+                      BoxShadow(
+                          color: op(Colors.black, 0.45),
+                          blurRadius: 40,
+                          offset: const Offset(0, 18))
+                    ],
             ),
             child: CoverImage(url: t.coverUrl, size: size, radius: 28),
           ),
@@ -657,15 +978,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
         future: _lyrics,
         builder: (_, snap) {
           if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator(color: C.mint, strokeWidth: 2.5));
+            return const Center(
+                child:
+                    CircularProgressIndicator(color: C.mint, strokeWidth: 2.5));
           }
           final r = snap.data;
           if (r == null || r.isEmpty) {
             return Center(
               child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                  const Text('Lirik belum ditemukan', style: TextStyle(color: C.dim)),
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Lirik belum ditemukan',
+                      style: TextStyle(color: C.dim)),
                   const SizedBox(height: 8),
                   TextButton.icon(
                     onPressed: () => _searchLyrics(t),
@@ -690,6 +1014,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             onSeek: (d) => audioHandler.seek(d),
             followPosition: _followLyrics,
             showIntervals: _showIntervals,
+            translations: _translationOn ? _translations : null,
+            translationLoading: _translationOn && _translationLoading,
+            translationError: _translationOn ? _translationError : null,
           );
         },
       ),
@@ -706,7 +1033,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   t.title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 3),
                 Text(
@@ -724,7 +1054,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
               final liked = store.isLiked(t.id);
               return IconButton(
                 icon: Icon(
-                  liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                  liked
+                      ? Icons.favorite_rounded
+                      : Icons.favorite_border_rounded,
                   color: liked ? C.mint : Colors.white70,
                   size: 28,
                 ),
@@ -741,7 +1073,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       stream: p.durationStream,
       initialData: p.duration,
       builder: (_, dsnap) {
-        final totalMs = (dsnap.data?.inMilliseconds ?? 0) > 0 ? dsnap.data!.inMilliseconds : t.durationMs;
+        final totalMs = (dsnap.data?.inMilliseconds ?? 0) > 0
+            ? dsnap.data!.inMilliseconds
+            : t.durationMs;
         final max = totalMs > 0 ? totalMs.toDouble() : 1.0;
         return StreamBuilder<Duration>(
           stream: p.positionStream,
@@ -754,7 +1088,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 SliderTheme(
                   data: SliderTheme.of(context).copyWith(
                     trackHeight: 4,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 6),
                     overlayShape: SliderComponentShape.noOverlay,
                     activeTrackColor: Colors.white,
                     inactiveTrackColor: Colors.white24,
@@ -800,24 +1135,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ValueListenableBuilder<bool>(
           valueListenable: h.shuffleOn,
           builder: (_, on, __) => IconButton(
-            icon: Icon(Icons.shuffle_rounded, color: on ? C.mint : Colors.white54),
+            icon: Icon(Icons.shuffle_rounded,
+                color: on ? C.mint : Colors.white54),
             onPressed: h.toggleShuffle,
           ),
         ),
         IconButton(
-          icon: const Icon(Icons.skip_previous_rounded, color: Colors.white, size: 42),
+          icon: const Icon(Icons.skip_previous_rounded,
+              color: Colors.white, size: 42),
           onPressed: h.skipToPrevious,
         ),
         _playButton(),
         IconButton(
-          icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 42),
+          icon: const Icon(Icons.skip_next_rounded,
+              color: Colors.white, size: 42),
           onPressed: h.skipToNext,
         ),
         ValueListenableBuilder<SxRepeatMode>(
           valueListenable: h.repeatMode,
           builder: (_, m, __) => IconButton(
             icon: Icon(
-              m == SxRepeatMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+              m == SxRepeatMode.one
+                  ? Icons.repeat_one_rounded
+                  : Icons.repeat_rounded,
               color: m == SxRepeatMode.off ? Colors.white54 : C.mint,
             ),
             onPressed: h.cycleRepeat,
@@ -840,7 +1180,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           child: Container(
             width: 72,
             height: 72,
-            decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+            decoration: const BoxDecoration(
+                color: Colors.white, shape: BoxShape.circle),
             child: Icon(
               playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
               color: Colors.black,
@@ -861,28 +1202,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final v = (snap.data ?? 1.0).clamp(0.0, 1.0).toDouble();
         return Row(
           children: [
-            const Icon(Icons.volume_down_rounded, color: Colors.white54, size: 20),
+            const Icon(Icons.volume_down_rounded,
+                color: Colors.white54, size: 20),
             Expanded(
               child: SliderTheme(
                 data: SliderTheme.of(context).copyWith(
                   trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 5),
                   overlayShape: SliderComponentShape.noOverlay,
                   activeTrackColor: Colors.white70,
                   inactiveTrackColor: Colors.white24,
                   thumbColor: Colors.white,
                 ),
-                child: Slider(value: v, min: 0, max: 1, onChanged: (x) => audioHandler.setVolume(x)),
+                child: Slider(
+                    value: v,
+                    min: 0,
+                    max: 1,
+                    onChanged: (x) => audioHandler.setVolume(x)),
               ),
             ),
-            const Icon(Icons.volume_up_rounded, color: Colors.white54, size: 20),
+            const Icon(Icons.volume_up_rounded,
+                color: Colors.white54, size: 20),
           ],
         );
       },
     );
   }
 
-  Widget _actionBtn(IconData icon, String label, VoidCallback? onTap, {bool active = false}) {
+  Widget _actionBtn(IconData icon, String label, VoidCallback? onTap,
+      {bool active = false}) {
     return PressScale(
       onTap: onTap ?? () {},
       child: Opacity(
@@ -895,7 +1244,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               tint: active ? 0.22 : 0.08,
               width: 52,
               height: 44,
-              child: Icon(icon, color: active ? C.mint : Colors.white70, size: 22),
+              child:
+                  Icon(icon, color: active ? C.mint : Colors.white70, size: 22),
             ),
             const SizedBox(height: 4),
             Text(
@@ -926,18 +1276,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 _actionBtn(
                   Icons.lyrics_rounded,
                   'Lirik',
-                  () => _setView(_view == _PlayerView.lyrics ? _PlayerView.cover : _PlayerView.lyrics),
+                  () => _setView(_view == _PlayerView.lyrics
+                      ? _PlayerView.cover
+                      : _PlayerView.lyrics),
                   active: _view == _PlayerView.lyrics,
                 ),
                 _actionBtn(Icons.queue_music_rounded, 'Antrian', _showQueue),
                 _actionBtn(
-                  offline ? Icons.download_done_rounded : Icons.download_rounded,
-                  offline ? 'Tersimpan' : (_downloading ? '${(_dlProgress * 100).round()}%' : 'Unduh'),
-                  _downloading ? null : (offline ? () => _removeOffline(t) : () => _downloadOffline(t)),
+                  offline
+                      ? Icons.download_done_rounded
+                      : Icons.download_rounded,
+                  offline
+                      ? 'Tersimpan'
+                      : (_downloading
+                          ? '${(_dlProgress * 100).round()}%'
+                          : 'Unduh'),
+                  _downloading
+                      ? null
+                      : (offline
+                          ? () => _removeOffline(t)
+                          : () => _downloadOffline(t)),
                   active: offline || _downloading,
                 ),
                 _actionBtn(Icons.share_rounded, 'Bagikan', () => _copyLink(t)),
-                _actionBtn(Icons.bedtime_rounded, until == null ? 'Tidur' : 'Aktif', _showSleep,
+                _actionBtn(Icons.bedtime_rounded,
+                    until == null ? 'Tidur' : 'Aktif', _showSleep,
                     active: until != null),
               ],
             );
@@ -948,10 +1311,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _copyLink(Track t) {
-    final text = t.permalinkUrl.isNotEmpty ? t.permalinkUrl : '${t.artist} - ${t.title}';
+    final text =
+        t.permalinkUrl.isNotEmpty ? t.permalinkUrl : '${t.artist} - ${t.title}';
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Disalin ke clipboard'), behavior: SnackBarBehavior.floating));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Disalin ke clipboard'),
+        behavior: SnackBarBehavior.floating));
   }
 
   void _setProgress(double v) {
@@ -969,13 +1334,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   static const _dlHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+    'User-Agent':
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
     'Accept': '*/*',
   };
 
   Future<http.Response> _dlGet(String url, {int sec = 45}) async {
     try {
-      return await http.get(Uri.parse(url), headers: _dlHeaders).timeout(Duration(seconds: sec));
+      return await http
+          .get(Uri.parse(url), headers: _dlHeaders)
+          .timeout(Duration(seconds: sec));
     } on TimeoutException {
       throw Exception('koneksi lambat saat mengunduh');
     } on SocketException {
@@ -986,7 +1354,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// Track dari daftar biasanya sudah punya stream. Hanya cari ulang kalau belum punya.
   Future<Track> _resolveForDownload(Track t) async {
     if (t.hasStream) return t;
-    final fresh = await _api.refresh(t).timeout(const Duration(seconds: 25), onTimeout: () => null);
+    final fresh = await _api
+        .refresh(t)
+        .timeout(const Duration(seconds: 25), onTimeout: () => null);
     if (fresh != null && fresh.hasStream) return fresh;
     throw Exception('stream tidak tersedia');
   }
@@ -1012,25 +1382,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
           final ctype = (resp.headers['content-type'] ?? '').toLowerCase();
           final head = String.fromCharCodes(resp.bodyBytes.take(64)).trimLeft();
-          if (ctype.contains('text/html') || ctype.contains('application/json') || head.startsWith('{')) {
+          if (ctype.contains('text/html') ||
+              ctype.contains('application/json') ||
+              head.startsWith('{')) {
             throw Exception('server tidak mengirim file audio');
           }
           final isM3u = head.startsWith('#EXT') || ctype.contains('mpegurl');
           bytes = isM3u ? await _downloadHls(resp, proxyUrl) : resp.bodyBytes;
-          outExt = (!isM3u && (ctype.contains('mpeg') || ctype.contains('mp3'))) ? 'mp3' : 'm4a';
+          outExt = (!isM3u && (ctype.contains('mpeg') || ctype.contains('mp3')))
+              ? 'mp3'
+              : 'm4a';
           if (bytes.length < 30 * 1024) {
-            throw Exception('file terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
+            throw Exception(
+                'file terlalu kecil (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
           }
           lastError = null;
           break;
         } catch (e) {
           lastError = e;
           final message = e.toString().toLowerCase();
-          if (attempt == 0 && !message.contains('enkripsi') && !message.contains('playlist hls kosong')) {
+          if (attempt == 0 &&
+              !message.contains('enkripsi') &&
+              !message.contains('playlist hls kosong')) {
             final fresh = await _api.refresh(src).timeout(
-              const Duration(seconds: 12),
-              onTimeout: () => null,
-            );
+                  const Duration(seconds: 12),
+                  onTimeout: () => null,
+                );
             if (fresh != null && fresh.hasStream && fresh.id == src.id) {
               src = fresh;
               continue;
@@ -1050,31 +1427,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
       try {
         await tempFile.writeAsBytes(bytes, flush: true);
         if (await file.exists()) await file.delete();
-        await tempFile.rename(file.path); // file parsial tidak pernah jadi offline
+        await tempFile
+            .rename(file.path); // file parsial tidak pernah jadi offline
       } catch (_) {
         if (await tempFile.exists()) await tempFile.delete();
         rethrow;
       }
 
       store.markOffline(t, file.path);
-      _snack('Lagu disimpan offline (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)');
+      _snack(
+          'Lagu disimpan offline (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)');
     } on TimeoutException {
       _snack('Gagal mengunduh: koneksi lambat, coba lagi');
     } catch (e) {
-      _snack('Gagal mengunduh: ${e.toString().replaceFirst('Exception: ', '')}');
+      _snack(
+          'Gagal mengunduh: ${e.toString().replaceFirst('Exception: ', '')}');
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
   }
 
   bool _hasEncryption(String body) =>
-      RegExp(r'#EXT-X-KEY:.*METHOD=(?!NONE)', caseSensitive: false).hasMatch(body);
+      RegExp(r'#EXT-X-KEY:.*METHOD=(?!NONE)', caseSensitive: false)
+          .hasMatch(body);
 
   /// Playlist HLS (langsung atau bertingkat) -> gabung init + semua segmen jadi satu fMP4.
   Future<Uint8List> _downloadHls(http.Response resp, String playlistUrl) async {
     var body = resp.body;
     var base = resp.request?.url.toString() ?? playlistUrl;
-    if (_hasEncryption(body)) throw Exception('stream memakai enkripsi, belum didukung');
+    if (_hasEncryption(body))
+      throw Exception('stream memakai enkripsi, belum didukung');
 
     if (_pickAllSegmentsFromM3u8(body, base).isEmpty) {
       final nested = _pickMediaFromM3u8(body, base);
@@ -1084,20 +1466,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
         throw Exception('gagal membuka playlist audio (${r2.statusCode})');
       }
       body = r2.body;
-      if (_hasEncryption(body)) throw Exception('stream memakai enkripsi, belum didukung');
+      if (_hasEncryption(body))
+        throw Exception('stream memakai enkripsi, belum didukung');
       base = r2.request?.url.toString() ?? nested;
     }
 
     final segs = _pickAllSegmentsFromM3u8(body, base);
     if (segs.isEmpty) throw Exception('tidak ada segmen audio');
     final initRaw = _pickMapUri(body);
-    final initUrl = initRaw == null ? null : Uri.parse(base).resolve(initRaw).toString();
+    final initUrl =
+        initRaw == null ? null : Uri.parse(base).resolve(initRaw).toString();
     return _downloadHlsParts(initUrl, segs);
   }
 
   /// Segmen diambil 6 sekaligus, tapi disusun ulang berdasarkan indeks -> urutan tetap benar.
-  Future<Uint8List> _downloadHlsParts(String? initUrl, List<String> segs) async {
-    if (segs.length > 1800) throw Exception('playlist terlalu besar atau tidak valid');
+  Future<Uint8List> _downloadHlsParts(
+      String? initUrl, List<String> segs) async {
+    if (segs.length > 1800)
+      throw Exception('playlist terlalu besar atau tidak valid');
     final total = segs.length + (initUrl == null ? 0 : 1);
     var done = 0;
 
@@ -1116,7 +1502,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     const batch = 6;
     for (var s = 0; s < segs.length; s += batch) {
       final end = math.min(s + batch, segs.length);
-      final responses = await Future.wait([for (var i = s; i < end; i++) _dlGet(segs[i], sec: 45)]);
+      final responses = await Future.wait(
+          [for (var i = s; i < end; i++) _dlGet(segs[i], sec: 45)]);
       for (var k = 0; k < responses.length; k++) {
         final r = responses[k];
         if (r.statusCode < 200 || r.statusCode >= 400 || r.bodyBytes.isEmpty) {
@@ -1176,7 +1563,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: C.surface,
-        title: const Text('Tempo dan Nada', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+        title: const Text('Tempo dan Nada',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
         content: ValueListenableBuilder<double>(
           valueListenable: audioHandler.tempo,
           builder: (_, v, __) => Row(
@@ -1187,7 +1575,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onPressed: () => audioHandler.setTempo(v - 0.05),
               ),
               Text('x${v.toStringAsFixed(2)}',
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800)),
               IconButton(
                 icon: const Icon(Icons.add_rounded, color: Colors.white),
                 onPressed: () => audioHandler.setTempo(v + 0.05),
@@ -1196,8 +1587,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => audioHandler.setTempo(1.0), child: const Text('Atur ulang')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+          TextButton(
+              onPressed: () => audioHandler.setTempo(1.0),
+              child: const Text('Atur ulang')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK')),
         ],
       ),
     );
@@ -1223,7 +1618,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text('Timer tidur',
-                        style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900)),
                     const SizedBox(height: 4),
                     Text(
                       until == null
@@ -1235,7 +1633,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     for (final m in const [15, 30, 60])
                       ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: Text('$m menit', style: const TextStyle(color: Colors.white)),
+                        title: Text('$m menit',
+                            style: const TextStyle(color: Colors.white)),
                         onTap: () {
                           audioHandler.setSleepTimer(Duration(minutes: m));
                           Navigator.of(ctx).pop();
@@ -1243,7 +1642,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('Matikan timer', style: TextStyle(color: Colors.white)),
+                      title: const Text('Matikan timer',
+                          style: TextStyle(color: Colors.white)),
                       onTap: () {
                         audioHandler.setSleepTimer(null);
                         Navigator.of(ctx).pop();
@@ -1274,7 +1674,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context: context,
       isScrollControlled: true,
       backgroundColor: C.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
       builder: (ctx) => DraggableScrollableSheet(
         expand: false,
         initialChildSize: 0.7,
@@ -1297,10 +1698,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     t.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: active ? C.mint : Colors.white, fontWeight: FontWeight.w700),
+                    style: TextStyle(
+                        color: active ? C.mint : Colors.white,
+                        fontWeight: FontWeight.w700),
                   ),
-                  subtitle: Text(t.artist, maxLines: 1, style: const TextStyle(color: C.dim)),
-                  trailing: active ? const Icon(Icons.graphic_eq_rounded, color: C.mint) : null,
+                  subtitle: Text(t.artist,
+                      maxLines: 1, style: const TextStyle(color: C.dim)),
+                  trailing: active
+                      ? const Icon(Icons.graphic_eq_rounded, color: C.mint)
+                      : null,
                   onTap: () => h.playQueueIndex(i),
                 );
               },
@@ -1319,7 +1725,9 @@ class _StyleSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final h = audioHandler;
-    final styles = kSoundStyles.where((s) => s != 'bass' || SoundXsAudioHandler.supportsBass).toList();
+    final styles = kSoundStyles
+        .where((s) => s != 'bass' || SoundXsAudioHandler.supportsBass)
+        .toList();
     return SafeArea(
       top: false,
       child: Padding(
@@ -1333,7 +1741,10 @@ class _StyleSheet extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text('Gaya suara',
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900)),
               const SizedBox(height: 4),
               const Text('Efek diterapkan real-time ke lagu yang diputar',
                   style: TextStyle(color: C.sub, fontSize: 12.5)),
@@ -1375,14 +1786,16 @@ class _StyleSheet extends StatelessWidget {
               height: 22,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                border: Border.all(color: active ? C.mint : Colors.white38, width: 2),
+                border: Border.all(
+                    color: active ? C.mint : Colors.white38, width: 2),
               ),
               child: active
                   ? Center(
                       child: Container(
                         width: 10,
                         height: 10,
-                        decoration: const BoxDecoration(color: C.mint, shape: BoxShape.circle),
+                        decoration: const BoxDecoration(
+                            color: C.mint, shape: BoxShape.circle),
                       ),
                     )
                   : null,
@@ -1400,7 +1813,8 @@ class _StyleSheet extends StatelessWidget {
                       fontSize: 15,
                     ),
                   ),
-                  Text(kStyleInfo[s] ?? '', style: const TextStyle(color: C.dim, fontSize: 12)),
+                  Text(kStyleInfo[s] ?? '',
+                      style: const TextStyle(color: C.dim, fontSize: 12)),
                 ],
               ),
             ),
